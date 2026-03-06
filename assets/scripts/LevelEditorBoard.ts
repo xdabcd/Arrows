@@ -91,6 +91,35 @@ export class LevelEditorBoard extends Component {
         }
     }
 
+    /**
+     * 根据棋盘容器局部坐标 (x, y) 得到所在格子的 (col, row)，与 getPointPosition 同一坐标系。
+     * 若在棋盘外则返回 null。
+     */
+    getGridFromLocal(x: number, y: number): { col: number; row: number } | null {
+        const spacing = this.pointSpacing;
+        const W = this.width;
+        const H = this.height;
+        const ox = (W - 1) * 0.5 * spacing;
+        const oy = (H - 1) * 0.5 * spacing;
+        const col = Math.round((x + ox) / spacing);
+        const row = Math.round((y + oy) / spacing);
+        if (col < 0 || col >= W || row < 0 || row >= H) return null;
+        return { col, row };
+    }
+
+    /** 获取棋盘格点 (col, row) 在棋盘容器局部空间中的位置，与点的摆放一致 */
+    getPointPosition(col: number, row: number): Vec3 {
+        const spacing = this.pointSpacing;
+        const W = this.width;
+        const H = this.height;
+        const ox = (W - 1) * 0.5 * spacing;
+        const oy = (H - 1) * 0.5 * spacing;
+        const x = col * spacing - ox;
+        const y = row * spacing - oy;
+        return new Vec3(x, y, 0);
+    }
+
+    getPointSpacing(): number { return this.pointSpacing; }
     getWidth(): number { return this.width; }
     getHeight(): number { return this.height; }
     getMinWidth(): number { return this.minWidth; }

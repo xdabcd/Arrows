@@ -23,7 +23,7 @@
     "_active": true,
     "_components": [],
     "_prefab": {
-      "__id__": 92
+      "__id__": 96
     },
     "_lpos": {
       "__type__": "cc.Vec3",
@@ -54,7 +54,7 @@
     },
     "autoReleaseAssets": false,
     "_globals": {
-      "__id__": 93
+      "__id__": 97
     },
     "_id": "b521ddc0-7fcf-4c59-be18-ed4148fe4e24"
   },
@@ -86,13 +86,13 @@
     "_active": true,
     "_components": [
       {
-        "__id__": 89
+        "__id__": 93
       },
       {
-        "__id__": 90
+        "__id__": 94
       },
       {
-        "__id__": 91
+        "__id__": 95
       }
     ],
     "_prefab": null,
@@ -1183,15 +1183,24 @@
       },
       {
         "__id__": 44
+      },
+      {
+        "__id__": 88
       }
     ],
     "_active": true,
     "_components": [
       {
-        "__id__": 88
+        "__id__": 90
       },
       {
         "__id__": 87
+      },
+      {
+        "__id__": 91
+      },
+      {
+        "__id__": 92
       }
     ],
     "_prefab": null,
@@ -3212,6 +3221,73 @@
     "_id": "beYCRAbeJE8KUbDK4keDU4"
   },
   {
+    "__type__": "cc.Node",
+    "_name": "ArrowContainer",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "_parent": {
+      "__id__": 41
+    },
+    "_children": [],
+    "_active": true,
+    "_components": [
+      {
+        "__id__": 89
+      }
+    ],
+    "_prefab": null,
+    "_lpos": {
+      "__type__": "cc.Vec3",
+      "x": 0,
+      "y": 0,
+      "z": 0
+    },
+    "_lrot": {
+      "__type__": "cc.Quat",
+      "x": 0,
+      "y": 0,
+      "z": 0,
+      "w": 1
+    },
+    "_lscale": {
+      "__type__": "cc.Vec3",
+      "x": 1,
+      "y": 1,
+      "z": 1
+    },
+    "_mobility": 0,
+    "_layer": 33554432,
+    "_euler": {
+      "__type__": "cc.Vec3",
+      "x": 0,
+      "y": 0,
+      "z": 0
+    },
+    "_id": "0cHQ/oR0NKj4UvdzDKECAN"
+  },
+  {
+    "__type__": "cc.UITransform",
+    "_name": "",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "node": {
+      "__id__": 88
+    },
+    "_enabled": true,
+    "__prefab": null,
+    "_contentSize": {
+      "__type__": "cc.Size",
+      "width": 100,
+      "height": 100
+    },
+    "_anchorPoint": {
+      "__type__": "cc.Vec2",
+      "x": 0.5,
+      "y": 0.5
+    },
+    "_id": "d83NqcZYdIm7yD9QRSEUyr"
+  },
+  {
     "__type__": "cc.UITransform",
     "_name": "",
     "_objFlags": 0,
@@ -3232,6 +3308,46 @@
       "y": 0.5
     },
     "_id": "2f2EehMfBEK7flckQ3b5Kp"
+  },
+  {
+    "__type__": "365b7WlTDtBSYQbw+Rs6FEC",
+    "_name": "",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "node": {
+      "__id__": 41
+    },
+    "_enabled": true,
+    "__prefab": null,
+    "board": {
+      "__id__": 87
+    },
+    "arrowManager": {
+      "__id__": 92
+    },
+    "boardContainer": {
+      "__id__": 42
+    },
+    "_id": "55FQiLqu5NmIgjBxzK4RGI"
+  },
+  {
+    "__type__": "e9fd2FLeTRK3qlp7J97T9Nf",
+    "_name": "",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "node": {
+      "__id__": 41
+    },
+    "_enabled": true,
+    "__prefab": null,
+    "arrowPrefab": {
+      "__uuid__": "cb81d092-6c06-4274-b75e-8ee1a6af266d",
+      "__expectedType__": "cc.Prefab"
+    },
+    "arrowContainer": {
+      "__id__": 88
+    },
+    "_id": "8dpvEeDURJW6SIywLnj5yg"
   },
   {
     "__type__": "cc.UITransform",
@@ -3320,28 +3436,28 @@
   {
     "__type__": "cc.SceneGlobals",
     "ambient": {
-      "__id__": 94
-    },
-    "shadows": {
-      "__id__": 95
-    },
-    "_skybox": {
-      "__id__": 96
-    },
-    "fog": {
-      "__id__": 97
-    },
-    "octree": {
       "__id__": 98
     },
-    "skin": {
+    "shadows": {
       "__id__": 99
     },
-    "lightProbeInfo": {
+    "_skybox": {
       "__id__": 100
     },
-    "postSettings": {
+    "fog": {
       "__id__": 101
+    },
+    "octree": {
+      "__id__": 102
+    },
+    "skin": {
+      "__id__": 103
+    },
+    "lightProbeInfo": {
+      "__id__": 104
+    },
+    "postSettings": {
+      "__id__": 105
     },
     "bakedWithStationaryMainLight": false,
     "bakedWithHighpLightmap": false
