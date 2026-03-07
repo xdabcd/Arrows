@@ -100,6 +100,18 @@ export class LevelEditorArrowEdit extends Component {
         if (this.arrowManager) this.arrowManager.setEditingPath(this._fullPath);
     }
 
+    /** 取消当前触摸/绘制（如双指缩放时由 GameLayerZoom 调用） */
+    cancelTouch(): void {
+        if (!this._isDrawing) return;
+        this._isDrawing = false;
+        this._fullPath = [];
+        this._touchEndHandled = true;
+        if (this.arrowManager) {
+            this.arrowManager.clearPreview();
+            this.arrowManager.setEditingPath(null);
+        }
+    }
+
     private _updatePreview(): void {
         this._syncEditingPath();
         if (!this.board || !this.arrowManager) return;
