@@ -2,6 +2,7 @@ import { _decorator, Component, Node, Prefab, instantiate, Vec3 } from 'cc';
 import { ArrowRenderer } from './ArrowRenderer';
 import { ArrowPoint } from './ArrowData';
 import { getArrowColor } from './ArrowColors';
+import type { LevelArrowData } from './LevelConfig';
 const { ccclass, property } = _decorator;
 
 /** 接管箭头结果：回退后的路径 + 颜色序列号 */
@@ -217,5 +218,36 @@ export class ArrowManager extends Component {
 
     getArrowCount(): number {
         return this._arrowNodes.length;
+    }
+
+    /** 获取所有箭头的路径与颜色，用于保存关卡 */
+    getAllArrowData(): LevelArrowData[] {
+        const out: LevelArrowData[] = [];
+        for (let i = 0; i < this._arrowPaths.length; i++) {
+            const path = this._arrowPaths[i];
+            const colorIndex = this._arrowColors[i] ?? 0;
+            if (path && path.length >= 2) {
+                out.push({
+                    points: path.map(p => ({ col: p.col, row: p.row })),
+                    colorIndex
+                });
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 根据关卡数据加载箭头（会先清空现有箭头）。
+     * @param arrows 箭头列表
+     * @param getPosition 格点转世界位置的函数，通常用 board.getPointPosition
+     */
+    loadFromData(arrows: LevelArrowData[], getPosition: (col: number, row: number) => Vec3): void {
+        this.clearAll();
+        for (const a of arrows) {
+            if (!a.points || a.points.length < 2) continue;
+            const positions = a.points.map(p => getPosition(p.col, p.row));
+            const points = a.points.map(p => ({ col: p.col, row: p.row }));
+            this.addArrow(positions, points, a.colorIndex ?? 0);
+        }
     }
 }

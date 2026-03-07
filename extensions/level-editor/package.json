@@ -1,0 +1,16 @@
+{
+  "package_version": 2,
+  "version": "1.0.0",
+  "name": "level-editor",
+  "description": "将关卡配置写入项目 assets/resources/conf/levels.json",
+  "main": "./main.js",
+  "author": "",
+  "editor": ">=3.4.2",
+  "contributions": {
+    "messages": {
+      "write-levels": {
+        "methods": ["writeLevels"]
+      }
+    }
+  }
+}
