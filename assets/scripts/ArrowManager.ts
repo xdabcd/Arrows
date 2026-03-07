@@ -1,7 +1,14 @@
 import { _decorator, Component, Node, Prefab, instantiate, Vec3 } from 'cc';
 import { ArrowRenderer } from './ArrowRenderer';
 import { ArrowPoint } from './ArrowData';
+import { getArrowColor } from './ArrowColors';
 const { ccclass, property } = _decorator;
+
+/** 接管箭头结果：回退后的路径 + 颜色序列号 */
+export interface TakeOverResult {
+    path: ArrowPoint[];
+    colorIndex: number;
+}
 
 function pointKey(col: number, row: number): string {
     return `${col},${row}`;
@@ -63,6 +70,8 @@ export class ArrowManager extends Component {
     private _arrowNodes: Node[] = [];
     /** 每条箭头对应的格点路径（与 _arrowNodes 一一对应） */
     private _arrowPaths: ArrowPoint[][] = [];
+    /** 每条箭头对应的颜色序列号（与 _arrowNodes 一一对应） */
+    private _arrowColors: number[] = [];
     private _previewNode: Node | null = null;
     /** 当前被已确认箭头占用的格点 (col,row) 集合 */
     private _occupiedPoints = new Set<string>();
@@ -94,9 +103,10 @@ export class ArrowManager extends Component {
      * 添加一条箭头并显示（身体和头在箭头节点下生成），并占用该箭头线上经过的所有格点（顶点+线段经过的格点）。
      * @param positions 顺序位置点（至少 2 个），与 arrowContainer 同坐标系
      * @param points 对应的格点列表，用于占用判定；不传则不占用
+     * @param colorIndex 颜色序列号，对应 ArrowColors 列表；默认 0
      * @returns 生成的箭头节点，失败返回 null
      */
-    addArrow(positions: Vec3[], points?: ArrowPoint[]): Node | null {
+    addArrow(positions: Vec3[], points?: ArrowPoint[], colorIndex: number = 0): Node | null {
         if (!positions || positions.length < 2 || !this.arrowPrefab) return null;
         const toOccupy: string[] = [];
         if (points && points.length >= 2) {
@@ -117,33 +127,34 @@ export class ArrowManager extends Component {
             return null;
         }
         node.setParent(container);
-        renderer.buildArrow(positions);
+        renderer.buildArrow(positions, getArrowColor(colorIndex));
         this._arrowNodes.push(node);
         this._arrowPaths.push(points && points.length >= 2 ? points.slice() : []);
+        this._arrowColors.push(colorIndex);
         return node;
     }
 
     /**
-     * 若 (col, row) 被某条箭头占据，则移除该箭头、释放占用，并返回「回退到该点」的路径（从起点到该点，含端点）。
-     * 若该点恰为路径顶点，返回起点到该顶点的路径；若在边上，返回起点到该边起点的路径并加上该点。
+     * 若 (col, row) 被某条箭头占据，则移除该箭头、释放占用，并返回「回退到该点」的路径与颜色序列号。
      * 若未被占据或找不到则返回 null。
      */
-    takeOverArrowAtPoint(col: number, row: number): ArrowPoint[] | null {
+    takeOverArrowAtPoint(col: number, row: number): TakeOverResult | null {
         const point: ArrowPoint = { col, row };
         for (let i = 0; i < this._arrowPaths.length; i++) {
             const path = this._arrowPaths[i];
+            const colorIndex = this._arrowColors[i] ?? 0;
             for (let j = 0; j < path.length; j++) {
                 if (path[j].col === col && path[j].row === row) {
                     const truncated = path.slice(0, j + 1);
                     this._removeArrowAtIndex(i);
-                    return truncated;
+                    return { path: truncated, colorIndex };
                 }
             }
             for (let j = 0; j < path.length - 1; j++) {
                 if (isOnSegment(point, path[j], path[j + 1])) {
                     const truncated = path.slice(0, j + 1).concat([{ col, row }]);
                     this._removeArrowAtIndex(i);
-                    return truncated;
+                    return { path: truncated, colorIndex };
                 }
             }
         }
@@ -162,6 +173,7 @@ export class ArrowManager extends Component {
         this._arrowNodes[index].destroy();
         this._arrowNodes.splice(index, 1);
         this._arrowPaths.splice(index, 1);
+        this._arrowColors.splice(index, 1);
     }
 
     /** 移除所有已添加的箭头并清空占用 */
@@ -171,14 +183,16 @@ export class ArrowManager extends Component {
         }
         this._arrowNodes = [];
         this._arrowPaths = [];
+        this._arrowColors = [];
         this._occupiedPoints.clear();
         this.clearPreview();
     }
 
     /**
      * 设置预览箭头（实时绘制时用）；positions 不足 2 个时会清除预览。
+     * @param colorIndex 颜色序列号，默认 0
      */
-    setPreviewArrow(positions: Vec3[]): void {
+    setPreviewArrow(positions: Vec3[], colorIndex: number = 0): void {
         if (!positions || positions.length < 2) {
             this.clearPreview();
             return;
@@ -190,7 +204,7 @@ export class ArrowManager extends Component {
             this._previewNode.setParent(container);
         }
         const renderer = this._previewNode.getComponent(ArrowRenderer);
-        if (renderer) renderer.buildArrow(positions);
+        if (renderer) renderer.buildArrow(positions, getArrowColor(colorIndex));
     }
 
     /** 清除预览箭头 */

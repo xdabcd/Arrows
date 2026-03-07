@@ -5,7 +5,7 @@ import { Vec3 } from 'cc';
  * 起始点和第二个点决定箭头位置与第一段方向，相邻两点之间用身体连接，距离决定身体长度，箭头头部在最后一个点。
  */
 
-/** 棋盘格点坐标（列 col = 横向，行 row = 纵向） */
+/** 棋盘格点坐标（列 col = 横向，行 row = 纵向），以棋盘中心为 (0,0)，可负值 */
 export interface ArrowPoint {
     col: number;
     row: number;

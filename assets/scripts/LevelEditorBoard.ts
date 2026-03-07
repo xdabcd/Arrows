@@ -74,9 +74,9 @@ export class LevelEditorBoard extends Component {
         const spacing = this.pointSpacing;
         const W = this.width;
         const H = this.height;
-        // 中心对齐：(0,0) 在网格中心
-        const ox = (W - 1) * 0.5 * spacing;
-        const oy = (H - 1) * 0.5 * spacing;
+        // 坐标系以中心为 (0,0)：col = i - floor(W/2), row = j - floor(H/2)
+        const ox = Math.floor(W / 2) * spacing;
+        const oy = Math.floor(H / 2) * spacing;
 
         for (let j = 0; j < H; j++) {
             for (let i = 0; i < W; i++) {
@@ -92,30 +92,29 @@ export class LevelEditorBoard extends Component {
     }
 
     /**
-     * 根据棋盘容器局部坐标 (x, y) 得到所在格子的 (col, row)，与 getPointPosition 同一坐标系。
+     * 根据棋盘容器局部坐标 (x, y) 得到所在格子的 (col, row)。
+     * 坐标系以中心为 (0,0)：col/row 为负表示中心左侧/下侧，正表示右侧/上侧。
      * 若在棋盘外则返回 null。
      */
     getGridFromLocal(x: number, y: number): { col: number; row: number } | null {
         const spacing = this.pointSpacing;
         const W = this.width;
         const H = this.height;
-        const ox = (W - 1) * 0.5 * spacing;
-        const oy = (H - 1) * 0.5 * spacing;
-        const col = Math.round((x + ox) / spacing);
-        const row = Math.round((y + oy) / spacing);
-        if (col < 0 || col >= W || row < 0 || row >= H) return null;
+        const col = Math.round(x / spacing);
+        const row = Math.round(y / spacing);
+        const colMin = -Math.floor(W / 2);
+        const colMax = Math.floor((W - 1) / 2);
+        const rowMin = -Math.floor(H / 2);
+        const rowMax = Math.floor((H - 1) / 2);
+        if (col < colMin || col > colMax || row < rowMin || row > rowMax) return null;
         return { col, row };
     }
 
-    /** 获取棋盘格点 (col, row) 在棋盘容器局部空间中的位置，与点的摆放一致 */
+    /** 获取棋盘格点 (col, row) 在棋盘容器局部空间中的位置。坐标系以中心为 (0,0)。 */
     getPointPosition(col: number, row: number): Vec3 {
         const spacing = this.pointSpacing;
-        const W = this.width;
-        const H = this.height;
-        const ox = (W - 1) * 0.5 * spacing;
-        const oy = (H - 1) * 0.5 * spacing;
-        const x = col * spacing - ox;
-        const y = row * spacing - oy;
+        const x = col * spacing;
+        const y = row * spacing;
         return new Vec3(x, y, 0);
     }
 

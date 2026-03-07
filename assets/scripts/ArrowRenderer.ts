@@ -1,4 +1,4 @@
-import { _decorator, Component, Node, Prefab, instantiate, Vec3, UITransform } from 'cc';
+import { _decorator, Component, Node, Prefab, instantiate, Vec3, UITransform, Color, Sprite } from 'cc';
 const { ccclass, property } = _decorator;
 
 /** 身体节点用 contentSize 高度控制长度，避免用 scale 压扁九宫格圆头；此为预制体默认高度，仅作 fallback */
@@ -24,8 +24,9 @@ export class ArrowRenderer extends Component {
     /**
      * 根据位置列表生成/刷新一条箭头。会先清除当前显示的箭头；身体和头生成在本节点下。
      * @param positions 顺序位置点（至少 2 个），本节点局部空间坐标
+     * @param color 可选，箭头颜色；不传则使用默认
      */
-    buildArrow(positions: Vec3[]): void {
+    buildArrow(positions: Vec3[], color?: Color): void {
         this.clearArrow();
         if (!positions || positions.length < 2 || !this.arrowBodyPrefab || !this.arrowHeadPrefab) {
             return;
@@ -71,6 +72,18 @@ export class ArrowRenderer extends Component {
         headNode.setPosition(positions[last]);
         headNode.eulerAngles = new Vec3(0, 0, headAngle);
         this._headNode = headNode;
+
+        if (color) this.applyColor(color);
+    }
+
+    /** 递归设置本节点及子节点上所有 Sprite 的颜色 */
+    applyColor(color: Color): void {
+        const setColorRec = (n: Node): void => {
+            const sp = n.getComponent(Sprite);
+            if (sp) sp.color = color.clone();
+            for (const c of n.children) setColorRec(c);
+        };
+        setColorRec(this.node);
     }
 
     /** 清除当前显示的箭头 */

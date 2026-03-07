@@ -1,6 +1,7 @@
 import { _decorator, Component, Node, input, Input, EventTouch, Vec3, UITransform } from 'cc';
 import { LevelEditorBoard } from './LevelEditorBoard';
 import { ArrowManager } from './ArrowManager';
+import { ArrowColorPicker } from './ArrowColorPicker';
 import { ArrowPoint, arrowDataToPositions, isValidArrowData, simplifyPath } from './ArrowData';
 const { ccclass, property } = _decorator;
 
@@ -55,6 +56,9 @@ export class LevelEditorArrowEdit extends Component {
 
     @property(ArrowManager)
     arrowManager: ArrowManager | null = null;
+
+    @property(ArrowColorPicker)
+    colorPicker: ArrowColorPicker | null = null;
 
     /** 棋盘容器节点（触摸坐标将转换到其局部空间）；不填则用本节点 */
     @property(Node)
@@ -121,7 +125,8 @@ export class LevelEditorArrowEdit extends Component {
             return;
         }
         const positions = arrowDataToPositions(path, (c, r) => this.board!.getPointPosition(c, r));
-        this.arrowManager.setPreviewArrow(positions);
+        const colorIndex = this.colorPicker?.getSelectedColorIndex() ?? 0;
+        this.arrowManager.setPreviewArrow(positions, colorIndex);
     }
 
     private _onTouchStart(event: EventTouch): void {
@@ -131,10 +136,11 @@ export class LevelEditorArrowEdit extends Component {
         if (cell == null) return;
         this._touchEndHandled = false;
         if (this.arrowManager && this.arrowManager.isPointOccupied(cell.col, cell.row)) {
-            const truncated = this.arrowManager.takeOverArrowAtPoint(cell.col, cell.row);
-            if (truncated && truncated.length >= 1) {
+            const result = this.arrowManager.takeOverArrowAtPoint(cell.col, cell.row);
+            if (result && result.path.length >= 1) {
                 this._isDrawing = true;
-                this._fullPath = truncated.slice();
+                this._fullPath = result.path.slice();
+                if (this.colorPicker) this.colorPicker.setSelectedColorIndex(result.colorIndex);
                 this._updatePreview();
             }
             return;
@@ -208,6 +214,7 @@ export class LevelEditorArrowEdit extends Component {
         this._syncEditingPath();
         if (simplified.length < 2 || !isValidArrowData(simplified)) return;
         const positions = arrowDataToPositions(simplified, (c, r) => this.board!.getPointPosition(c, r));
-        this.arrowManager.addArrow(positions, simplified);
+        const colorIndex = this.colorPicker?.getSelectedColorIndex() ?? 0;
+        this.arrowManager.addArrow(positions, simplified, colorIndex);
     }
 }
