@@ -23,7 +23,7 @@
     "_active": true,
     "_components": [],
     "_prefab": {
-      "__id__": 169
+      "__id__": 170
     },
     "_lpos": {
       "__type__": "cc.Vec3",
@@ -54,7 +54,7 @@
     },
     "autoReleaseAssets": false,
     "_globals": {
-      "__id__": 170
+      "__id__": 171
     },
     "_id": "b521ddc0-7fcf-4c59-be18-ed4148fe4e24"
   },
@@ -96,6 +96,9 @@
       },
       {
         "__id__": 168
+      },
+      {
+        "__id__": 169
       }
     ],
     "_prefab": null,
@@ -228,7 +231,7 @@
       "__id__": 2
     },
     "_children": [],
-    "_active": true,
+    "_active": false,
     "_components": [
       {
         "__id__": 6
@@ -479,7 +482,7 @@
       "__id__": 2
     },
     "_children": [],
-    "_active": true,
+    "_active": false,
     "_components": [
       {
         "__id__": 13
@@ -6785,6 +6788,26 @@
     "_id": "a47xqoMFhO8YBIimbma8f7"
   },
   {
+    "__type__": "c8d9eDxKjtMXW5/ipsMHS4/",
+    "_name": "",
+    "_objFlags": 0,
+    "__editorExtras__": {},
+    "node": {
+      "__id__": 2
+    },
+    "_enabled": true,
+    "__prefab": null,
+    "enterLevelEditor": false,
+    "board": {
+      "__id__": 22
+    },
+    "arrowManager": {
+      "__id__": 159
+    },
+    "showDebugStats": true,
+    "_id": "06JQWJR9RGRLxj8lt8+n0L"
+  },
+  {
     "__type__": "cc.PrefabInfo",
     "root": null,
     "asset": null,
@@ -6795,28 +6818,28 @@
   {
     "__type__": "cc.SceneGlobals",
     "ambient": {
-      "__id__": 171
-    },
-    "shadows": {
       "__id__": 172
     },
-    "_skybox": {
+    "shadows": {
       "__id__": 173
     },
-    "fog": {
+    "_skybox": {
       "__id__": 174
     },
-    "octree": {
+    "fog": {
       "__id__": 175
     },
-    "skin": {
+    "octree": {
       "__id__": 176
     },
-    "lightProbeInfo": {
+    "skin": {
       "__id__": 177
     },
-    "postSettings": {
+    "lightProbeInfo": {
       "__id__": 178
+    },
+    "postSettings": {
+      "__id__": 179
     },
     "bakedWithStationaryMainLight": false,
     "bakedWithHighpLightmap": false

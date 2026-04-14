@@ -15,6 +15,17 @@ function pointKey(col: number, row: number): string {
     return `${col},${row}`;
 }
 
+function gcdInt(a: number, b: number): number {
+    a = Math.abs(Math.trunc(a));
+    b = Math.abs(Math.trunc(b));
+    while (b !== 0) {
+        const t = a % b;
+        a = b;
+        b = t;
+    }
+    return a;
+}
+
 /** 线段 a→b 经过的所有格点（含端点），Bresenham 直线 */
 function getGridPointsOnSegment(a: ArrowPoint, b: ArrowPoint): ArrowPoint[] {
     const out: ArrowPoint[] = [];
@@ -86,6 +97,25 @@ export class ArrowManager extends Component {
     private _occupiedPoints = new Set<string>();
     /** 当前正在编辑的路径占用的格点（与 _fullPath 同步，由编辑器在更新路径时调用 setEditingPath） */
     private _editingPathPoints = new Set<string>();
+    private _isSliding = false;
+    /** 滑出动画上下文 */
+    private _slideOutCtx: {
+        arrowIndex: number;
+        node: Node;
+        renderer: ArrowRenderer;
+        totalDistance: number;
+        initialSpeed: number;
+        acceleration: number;
+        totalDuration: number;
+        elapsed: number;
+    } | null = null;
+
+    /** 固定滑出速度：2 帧移动 1 格（60fps 参考）。 */
+    private _getSlideOutSecondsPerGrid(): number {
+        const refFps = 60;
+        const framesPerStep = 2;
+        return framesPerStep / refFps;
+    }
 
     /** 判定棋盘中的点 (col, row) 是否已被占用（含已确认箭头 + 当前编辑路径） */
     isPointOccupied(col: number, row: number): boolean {
@@ -172,21 +202,29 @@ export class ArrowManager extends Component {
 
     private _removeArrowAtIndex(index: number): void {
         const path = this._arrowPaths[index];
-        if (path && path.length >= 2) {
-            for (let i = 0; i < path.length - 1; i++) {
-                for (const p of getGridPointsOnSegment(path[i], path[i + 1])) {
-                    this._occupiedPoints.delete(pointKey(p.col, p.row));
-                }
-            }
-        }
+        this._releaseOccupiedForPath(path);
         this._arrowNodes[index].destroy();
         this._arrowNodes.splice(index, 1);
         this._arrowPaths.splice(index, 1);
         this._arrowColors.splice(index, 1);
     }
 
+    private _releaseOccupiedForPath(path: ArrowPoint[] | undefined): void {
+        if (!path || path.length < 2) return;
+        for (let i = 0; i < path.length - 1; i++) {
+            for (const p of getGridPointsOnSegment(path[i], path[i + 1])) {
+                this._occupiedPoints.delete(pointKey(p.col, p.row));
+            }
+        }
+    }
+
+    onDestroy(): void {
+        this._abortSlideOutAnimation();
+    }
+
     /** 移除所有已添加的箭头并清空占用 */
     clearAll(): void {
+        this._abortSlideOutAnimation();
         for (const n of this._arrowNodes) {
             n.destroy();
         }
@@ -290,11 +328,15 @@ export class ArrowManager extends Component {
     private getExtendedPathForSlide(path: ArrowPoint[], bounds: BoardBounds): ArrowPoint[] {
         const k = path.length;
         if (k < 2) return path.slice();
-        const dCol = path[k - 1].col - path[k - 2].col;
-        const dRow = path[k - 1].row - path[k - 2].row;
-        if (dCol === 0 && dRow === 0) return path.slice();
+        const rawDCol = path[k - 1].col - path[k - 2].col;
+        const rawDRow = path[k - 1].row - path[k - 2].row;
+        if (rawDCol === 0 && rawDRow === 0) return path.slice();
+        const g = gcdInt(rawDCol, rawDRow);
+        const dCol = g > 0 ? rawDCol / g : rawDCol;
+        const dRow = g > 0 ? rawDRow / g : rawDRow;
         const { colMin, colMax, rowMin, rowMax } = bounds;
-        const maxExtend = (colMax - colMin + 1) + (rowMax - rowMin + 1);
+        /** 基础延伸 + 额外格数，保证滑出动画末端仍有足够顶点可插值 */
+        const maxExtend = (colMax - colMin + 1) + (rowMax - rowMin + 1) + 32;
         const extended: ArrowPoint[] = path.slice();
         for (let i = 1; i <= maxExtend; i++) {
             extended.push({
@@ -364,5 +406,178 @@ export class ArrowManager extends Component {
             if (this.canArrowSlideOutAlongPath(i, bounds)) result.push(i);
         }
         return result;
+    }
+
+    private _findArrowIndexAtPoint(col: number, row: number): number {
+        const point: ArrowPoint = { col, row };
+        for (let i = 0; i < this._arrowPaths.length; i++) {
+            const path = this._arrowPaths[i];
+            for (let j = 0; j < path.length; j++) {
+                if (path[j].col === col && path[j].row === row) return i;
+            }
+            for (let j = 0; j < path.length - 1; j++) {
+                if (isOnSegment(point, path[j], path[j + 1])) return i;
+            }
+        }
+        return -1;
+    }
+
+    private _getSlideOutExitStepForPath(path: ArrowPoint[] | undefined, bounds: BoardBounds, otherOccupied: Set<string>): number {
+        if (!path || path.length < 2) return -1;
+        const extended = this.getExtendedPathForSlide(path, bounds);
+        const pathLen = path.length;
+        const maxStep = extended.length - pathLen;
+        for (let t = 1; t <= maxStep; t++) {
+            const occupied = this.getOccupiedAtStep(extended, t, pathLen);
+            let allOut = true;
+            for (const key of occupied) {
+                const [c, r] = key.split(',').map(Number);
+                if (this.isInBounds(c, r, bounds)) {
+                    allOut = false;
+                    if (otherOccupied.has(key)) return -1;
+                }
+            }
+            if (allOut) return t;
+        }
+        return -1;
+    }
+
+    private _abortSlideOutAnimation(): void {
+        this._slideOutCtx = null;
+        this._isSliding = false;
+    }
+
+    private _finishSlideOutFromCtx(ctx: {
+        arrowIndex: number;
+        node: Node;
+        renderer: ArrowRenderer;
+        totalDistance: number;
+        initialSpeed: number;
+        acceleration: number;
+        totalDuration: number;
+        elapsed: number;
+    }): void {
+        this._slideOutCtx = null;
+        if (ctx.node.isValid) {
+            ctx.node.destroy();
+            this._arrowNodes.splice(ctx.arrowIndex, 1);
+            this._arrowPaths.splice(ctx.arrowIndex, 1);
+            this._arrowColors.splice(ctx.arrowIndex, 1);
+        }
+        this._isSliding = false;
+    }
+
+    private _tickSlideOut(dt: number): void {
+        const ctx = this._slideOutCtx;
+        if (!ctx || !ctx.node.isValid) {
+            this._abortSlideOutAnimation();
+            return;
+        }
+        if (ctx.totalDuration <= 1e-6) {
+            this._finishSlideOutFromCtx(ctx);
+            return;
+        }
+        ctx.elapsed = Math.min(ctx.totalDuration, ctx.elapsed + Math.max(0, dt));
+        const t = ctx.elapsed;
+        const moved = Math.min(
+            ctx.totalDistance,
+            ctx.initialSpeed * t + 0.5 * ctx.acceleration * t * t
+        );
+        ctx.renderer.updateSlideByDistance(moved);
+        if (ctx.elapsed >= ctx.totalDuration - 1e-6) this._finishSlideOutFromCtx(ctx);
+    }
+
+    update(dt: number): void {
+        if (!this._slideOutCtx) return;
+        this._tickSlideOut(dt);
+    }
+
+    /**
+     * 点击某个格点后，若命中箭头且可沿自身轨迹滑出棋盘，则播放滑出动画并移除该箭头。
+     * @param stepDuration 约等于每「移动一格」的时间比例（总时长会据此估算）
+     */
+    trySlideOutArrowAtPoint(
+        col: number,
+        row: number,
+        bounds: BoardBounds,
+        getPosition: (c: number, r: number) => Vec3,
+        _stepDuration: number = 0.06
+    ): boolean {
+        if (this._isSliding) return false;
+        const arrowIndex = this._findArrowIndexAtPoint(col, row);
+        if (arrowIndex < 0) return false;
+        const path = this._arrowPaths[arrowIndex];
+        const node = this._arrowNodes[arrowIndex];
+        if (!path || path.length < 2 || !node || !node.isValid) return false;
+        const otherOccupied = this.getOccupiedPointsExcludingArrow(arrowIndex);
+        const exitStep = this._getSlideOutExitStepForPath(path, bounds, otherOccupied);
+        if (exitStep < 1) {
+            console.log('[Arrows] 箭头被阻挡，无法沿轨迹滑出');
+            return false;
+        }
+
+        const colorIndex = this._arrowColors[arrowIndex] ?? 0;
+        // 用原始路径建段，滑出期间只改这批 body 的长度，不新增段数
+        const initialPositions = path.map(p => getPosition(p.col, p.row));
+        const renderer = node.getComponent(ArrowRenderer);
+        if (!renderer) return false;
+
+        this._releaseOccupiedForPath(path);
+
+        const extended = this.getExtendedPathForSlide(path, bounds);
+        /** 逻辑上已全部离格后，再多滑几格，避免线宽/箭头头仍压在边线内 */
+        const VISUAL_PAD = 6;
+        const finalStart = Math.min(exitStep + VISUAL_PAD, extended.length - path.length);
+
+        this._abortSlideOutAnimation();
+        renderer.buildArrow(initialPositions, getArrowColor(colorIndex));
+        let totalDistance = 0;
+        for (let i = 0; i < finalStart; i++) {
+            const a = getPosition(extended[i].col, extended[i].row);
+            const b = getPosition(extended[i + 1].col, extended[i + 1].row);
+            totalDistance += Vec3.distance(a, b);
+        }
+        const rawDCol = path[path.length - 1].col - path[path.length - 2].col;
+        const rawDRow = path[path.length - 1].row - path[path.length - 2].row;
+        const g = gcdInt(rawDCol, rawDRow);
+        const stepCol = g > 0 ? rawDCol / g : rawDCol;
+        const stepRow = g > 0 ? rawDRow / g : rawDRow;
+        const tail = path[path.length - 1];
+        // 统一使用“滑出方向单格位移”的世界距离做速度标尺，避免不同箭头因首段长短导致速度不一致
+        const unitA = getPosition(tail.col, tail.row);
+        const unitB = getPosition(tail.col + stepCol, tail.row + stepRow);
+        const unitGridDistance = Vec3.distance(unitA, unitB);
+        const speedUnitsPerSec = unitGridDistance > 1e-6
+            ? unitGridDistance / this._getSlideOutSecondsPerGrid()
+            : 0;
+        // 样例：第二段速度约为第一段 1.1 倍，按同一时间窗推导恒定加速度
+        const accelPerSec2 = this._getSlideOutSecondsPerGrid() > 1e-6
+            ? (speedUnitsPerSec * 0.1) / this._getSlideOutSecondsPerGrid()
+            : 0;
+        let totalDuration = 0;
+        if (speedUnitsPerSec > 1e-6) {
+            if (accelPerSec2 > 1e-6) {
+                // s = v0 t + 1/2 a t^2
+                const disc = speedUnitsPerSec * speedUnitsPerSec + 2 * accelPerSec2 * totalDistance;
+                totalDuration = (-speedUnitsPerSec + Math.sqrt(Math.max(0, disc))) / accelPerSec2;
+            } else {
+                totalDuration = totalDistance / speedUnitsPerSec;
+            }
+        }
+
+        this._slideOutCtx = {
+            arrowIndex,
+            node,
+            renderer,
+            totalDistance,
+            initialSpeed: speedUnitsPerSec,
+            acceleration: accelPerSec2,
+            totalDuration,
+            elapsed: 0
+        };
+        this._isSliding = true;
+        renderer.updateSlideByDistance(0);
+
+        return true;
     }
 }

@@ -40,6 +40,32 @@ export class LevelEditorBoard extends Component {
     /** 当前已生成的点的节点（用于刷新时销毁） */
     private _pointNodes: Node[] = [];
 
+    /** 当前宽度对应列范围（整数格坐标） */
+    private _getColRange(): { min: number; max: number } {
+        const min = -Math.floor(this.width / 2);
+        return { min, max: min + this.width - 1 };
+    }
+
+    /** 当前高度对应行范围（整数格坐标） */
+    private _getRowRange(): { min: number; max: number } {
+        const min = -Math.floor(this.height / 2);
+        return { min, max: min + this.height - 1 };
+    }
+
+    /**
+     * 棋盘几何中心在“格坐标”中的位置：
+     * - 奇数尺寸时为整数（如 0）
+     * - 偶数尺寸时为半格（如 -0.5）
+     */
+    private _getGridCenter(): { col: number; row: number } {
+        const colRange = this._getColRange();
+        const rowRange = this._getRowRange();
+        return {
+            col: (colRange.min + colRange.max) * 0.5,
+            row: (rowRange.min + rowRange.max) * 0.5
+        };
+    }
+
     onLoad() {
         this.clampSize();
         this.buildBoard();
@@ -75,16 +101,18 @@ export class LevelEditorBoard extends Component {
         const spacing = this.pointSpacing;
         const W = this.width;
         const H = this.height;
-        // 坐标系以中心为 (0,0)：col = i - floor(W/2), row = j - floor(H/2)
-        const ox = Math.floor(W / 2) * spacing;
-        const oy = Math.floor(H / 2) * spacing;
+        const colRange = this._getColRange();
+        const rowRange = this._getRowRange();
+        const center = this._getGridCenter();
 
         for (let j = 0; j < H; j++) {
             for (let i = 0; i < W; i++) {
                 const pointNode = instantiate(this.pointPrefab);
                 pointNode.setParent(container);
-                const x = i * spacing - ox;
-                const y = j * spacing - oy;
+                const col = colRange.min + i;
+                const row = rowRange.min + j;
+                const x = (col - center.col) * spacing;
+                const y = (row - center.row) * spacing;
                 pointNode.setPosition(new Vec3(x, y, 0));
                 pointNode.name = `Point_${i}_${j}`;
                 this._pointNodes.push(pointNode);
@@ -99,14 +127,15 @@ export class LevelEditorBoard extends Component {
      */
     getGridFromLocal(x: number, y: number): { col: number; row: number } | null {
         const spacing = this.pointSpacing;
-        const W = this.width;
-        const H = this.height;
-        const col = Math.round(x / spacing);
-        const row = Math.round(y / spacing);
-        const colMin = -Math.floor(W / 2);
-        const colMax = Math.floor((W - 1) / 2);
-        const rowMin = -Math.floor(H / 2);
-        const rowMax = Math.floor((H - 1) / 2);
+        const colRange = this._getColRange();
+        const rowRange = this._getRowRange();
+        const center = this._getGridCenter();
+        const col = Math.round(x / spacing + center.col);
+        const row = Math.round(y / spacing + center.row);
+        const colMin = colRange.min;
+        const colMax = colRange.max;
+        const rowMin = rowRange.min;
+        const rowMax = rowRange.max;
         if (col < colMin || col > colMax || row < rowMin || row > rowMax) return null;
         return { col, row };
     }
@@ -114,8 +143,9 @@ export class LevelEditorBoard extends Component {
     /** 获取棋盘格点 (col, row) 在棋盘容器局部空间中的位置。坐标系以中心为 (0,0)。 */
     getPointPosition(col: number, row: number): Vec3 {
         const spacing = this.pointSpacing;
-        const x = col * spacing;
-        const y = row * spacing;
+        const center = this._getGridCenter();
+        const x = (col - center.col) * spacing;
+        const y = (row - center.row) * spacing;
         return new Vec3(x, y, 0);
     }
 
@@ -125,12 +155,13 @@ export class LevelEditorBoard extends Component {
 
     /** 棋盘边界（中心坐标系），供 ArrowManager 等逻辑使用 */
     getBounds(): BoardBounds {
-        const W = this.width, H = this.height;
+        const colRange = this._getColRange();
+        const rowRange = this._getRowRange();
         return {
-            colMin: -Math.floor(W / 2),
-            colMax: Math.floor((W - 1) / 2),
-            rowMin: -Math.floor(H / 2),
-            rowMax: Math.floor((H - 1) / 2)
+            colMin: colRange.min,
+            colMax: colRange.max,
+            rowMin: rowRange.min,
+            rowMax: rowRange.max
         };
     }
     getMinWidth(): number { return this.minWidth; }
