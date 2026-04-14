@@ -1,7 +1,7 @@
 import { _decorator, Component, Button, Node, Prefab, instantiate, Label, Layout } from 'cc';
 import { LevelEditorBoard } from './LevelEditorBoard';
-import { ArrowManager } from './ArrowManager';
-import { LevelConfigData, LevelsConfigFile, LevelStorage, deepClone } from './LevelConfig';
+import { ArrowManager } from '../arrow/ArrowManager';
+import { LevelConfigData, LevelsConfigFile, LevelStorage, deepClone } from '../level/LevelConfig';
 const { ccclass, property } = _decorator;
 
 /**
@@ -131,6 +131,7 @@ export class LevelEditorSave extends Component {
             this._original.levels.push(deepClone(data));
         }
         LevelStorage.saveToProjectFile(this._original);
+        LevelStorage.setPreloaded(this._original);
         this._ensureCurrentSlots();
         this._refreshLevelList();
         console.log('[LevelEditor] 保存当前关卡', idx + 1, '关卡数据:', JSON.stringify(this._original, null, 2));
@@ -151,6 +152,7 @@ export class LevelEditorSave extends Component {
         }
         this._original = { levels: toSave };
         LevelStorage.saveToProjectFile(this._original);
+        LevelStorage.setPreloaded(this._original);
         this._ensureCurrentSlots();
         this._refreshLevelList();
         console.log('[LevelEditor] 保存所有关卡，关卡数据:', JSON.stringify(this._original, null, 2));

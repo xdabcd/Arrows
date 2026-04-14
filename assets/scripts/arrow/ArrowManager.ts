@@ -2,7 +2,7 @@ import { _decorator, Component, Node, Prefab, instantiate, Vec3 } from 'cc';
 import { ArrowRenderer } from './ArrowRenderer';
 import { ArrowPoint } from './ArrowData';
 import { getArrowColor } from './ArrowColors';
-import type { LevelArrowData } from './LevelConfig';
+import type { LevelArrowData } from '../level/LevelConfig';
 const { ccclass, property } = _decorator;
 
 /** 接管箭头结果：回退后的路径 + 颜色序列号 */
@@ -41,6 +41,14 @@ function getGridPointsOnSegment(a: ArrowPoint, b: ArrowPoint): ArrowPoint[] {
         }
     }
     return out;
+}
+
+/** 棋盘边界（与 LevelEditorBoard 中心坐标系一致） */
+export interface BoardBounds {
+    colMin: number;
+    colMax: number;
+    rowMin: number;
+    rowMax: number;
 }
 
 /** 点 p 是否在线段 a-b 上（共线且在 a、b 之间或为端点） */
@@ -249,5 +257,112 @@ export class ArrowManager extends Component {
             const points = a.points.map(p => ({ col: p.col, row: p.row }));
             this.addArrow(positions, points, a.colorIndex ?? 0);
         }
+    }
+
+    /**
+     * 获取指定箭头占据的所有格点（路径上每段线段经过的格点）
+     */
+    getArrowOccupiedPoints(arrowIndex: number): Set<string> {
+        const out = new Set<string>();
+        const path = this._arrowPaths[arrowIndex];
+        if (!path || path.length < 2) return out;
+        for (let i = 0; i < path.length - 1; i++) {
+            for (const p of getGridPointsOnSegment(path[i], path[i + 1])) {
+                out.add(pointKey(p.col, p.row));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 获取除指定箭头外，其它箭头占据的格点集合（用于判断是否阻挡）
+     */
+    getOccupiedPointsExcludingArrow(arrowIndex: number): Set<string> {
+        const other = new Set<string>(this._occupiedPoints);
+        const self = this.getArrowOccupiedPoints(arrowIndex);
+        for (const k of self) other.delete(k);
+        return other;
+    }
+
+    /**
+     * 沿箭头自身路径方向延伸路径：按箭头方向（末段指向）在路径末尾追加格点，直到足够滑出棋盘。
+     */
+    private getExtendedPathForSlide(path: ArrowPoint[], bounds: BoardBounds): ArrowPoint[] {
+        const k = path.length;
+        if (k < 2) return path.slice();
+        const dCol = path[k - 1].col - path[k - 2].col;
+        const dRow = path[k - 1].row - path[k - 2].row;
+        if (dCol === 0 && dRow === 0) return path.slice();
+        const { colMin, colMax, rowMin, rowMax } = bounds;
+        const maxExtend = (colMax - colMin + 1) + (rowMax - rowMin + 1);
+        const extended: ArrowPoint[] = path.slice();
+        for (let i = 1; i <= maxExtend; i++) {
+            extended.push({
+                col: path[k - 1].col + i * dCol,
+                row: path[k - 1].row + i * dRow
+            });
+        }
+        return extended;
+    }
+
+    /**
+     * 在延伸路径上，取从 extended[start] 起、长度为 pathLen 的连续顶点构成的折线所占据的格点。
+     */
+    private getOccupiedAtStep(extended: ArrowPoint[], start: number, pathLen: number): Set<string> {
+        const out = new Set<string>();
+        for (let i = 0; i < pathLen - 1; i++) {
+            const a = extended[start + i];
+            const b = extended[start + i + 1];
+            if (a == null || b == null) break;
+            for (const p of getGridPointsOnSegment(a, b)) {
+                out.add(pointKey(p.col, p.row));
+            }
+        }
+        return out;
+    }
+
+    private isInBounds(col: number, row: number, bounds: BoardBounds): boolean {
+        return col >= bounds.colMin && col <= bounds.colMax && row >= bounds.rowMin && row <= bounds.rowMax;
+    }
+
+    /**
+     * 判断某箭头沿自身路径方向（箭头指向）按路径一步步滑出棋盘时，是否会被其它箭头的占据点阻挡。
+     * 滑出方式：路径顶点沿路径向前移动，每步后箭头占据「当前段」路径上的格点，直到整条箭头移出棋盘。
+     */
+    canArrowSlideOutAlongPath(arrowIndex: number, bounds: BoardBounds): boolean {
+        const path = this._arrowPaths[arrowIndex];
+        if (!path || path.length < 2) return false;
+        const extended = this.getExtendedPathForSlide(path, bounds);
+        const pathLen = path.length;
+        const otherOccupied = this.getOccupiedPointsExcludingArrow(arrowIndex);
+        const maxStep = extended.length - pathLen;
+
+        for (let t = 1; t <= maxStep; t++) {
+            const occupied = this.getOccupiedAtStep(extended, t, pathLen);
+            let allOut = true;
+            for (const key of occupied) {
+                const [c, r] = key.split(',').map(Number);
+                if (this.isInBounds(c, r, bounds)) {
+                    allOut = false;
+                    if (otherOccupied.has(key)) return false;
+                }
+            }
+            if (allOut) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 找出当前关卡中，可以沿自身路径方向滑出棋盘且不被其它箭头占据点阻挡的箭头（按箭头索引列表返回）。
+     * @param bounds 棋盘边界，与 LevelEditorBoard 中心坐标系一致
+     */
+    getArrowsThatCanSlideOut(bounds: BoardBounds): number[] {
+        const result: number[] = [];
+        for (let i = 0; i < this._arrowPaths.length; i++) {
+            const path = this._arrowPaths[i];
+            if (!path || path.length < 2) continue;
+            if (this.canArrowSlideOutAlongPath(i, bounds)) result.push(i);
+        }
+        return result;
     }
 }

@@ -1,10 +1,10 @@
-import { _decorator, Component, Node, Input, EventTouch, EventMouse, Vec3 } from 'cc';
+import { _decorator, Component, Node, Input, EventTouch, EventMouse, Vec3, Vec2 } from 'cc';
 import * as cc from 'cc';
 /** 兼容未单独导出 input 的版本：从 cc 命名空间取 */
 const input = (cc as any).input;
-import { LevelEditorBoard } from './LevelEditorBoard';
-import { ArrowManager } from './ArrowManager';
-import { LevelEditorArrowEdit } from './LevelEditorArrowEdit';
+import { LevelEditorBoard } from '../editor/LevelEditorBoard';
+import { ArrowManager } from '../arrow/ArrowManager';
+import { LevelEditorArrowEdit } from '../editor/LevelEditorArrowEdit';
 const { ccclass, property } = _decorator;
 
 function distance(x1: number, y1: number, x2: number, y2: number): number {
@@ -48,6 +48,8 @@ export class GameLayerZoom extends Component {
     private _lastPinchDistance = 0;
     private _lastPinchScale = 1;
     private _resolvedGameLayer: Node | null = null;
+    private _isMouseDragging = false;
+    private _lastDragPos = new Vec2();
 
     onLoad() {
         this._ensureGameLayer();
@@ -59,6 +61,9 @@ export class GameLayerZoom extends Component {
         input.on(Input.EventType.TOUCH_END, this._onTouchEnd, this);
         input.on(Input.EventType.TOUCH_CANCEL, this._onTouchEnd, this);
         input.on(Input.EventType.MOUSE_WHEEL, this._onMouseWheel, this);
+        input.on(Input.EventType.MOUSE_DOWN, this._onMouseDown, this);
+        input.on(Input.EventType.MOUSE_MOVE, this._onMouseMove, this);
+        input.on(Input.EventType.MOUSE_UP, this._onMouseUp, this);
     }
 
     onDestroy() {
@@ -68,6 +73,9 @@ export class GameLayerZoom extends Component {
             input.off(Input.EventType.TOUCH_END, this._onTouchEnd, this);
             input.off(Input.EventType.TOUCH_CANCEL, this._onTouchEnd, this);
             input.off(Input.EventType.MOUSE_WHEEL, this._onMouseWheel, this);
+            input.off(Input.EventType.MOUSE_DOWN, this._onMouseDown, this);
+            input.off(Input.EventType.MOUSE_MOVE, this._onMouseMove, this);
+            input.off(Input.EventType.MOUSE_UP, this._onMouseUp, this);
         }
     }
 
@@ -106,6 +114,45 @@ export class GameLayerZoom extends Component {
         s = Math.max(this.minScale, Math.min(this.maxScale, s));
         this._scale = s;
         layer.setScale(new Vec3(s, s, 1));
+        this._clampLayerPosition();
+    }
+
+    /** 棋盘半宽/半高（层局部空间），用于拖动范围限制 */
+    private _getBoardHalfSize(): Vec2 {
+        const halfW = (this.board ? this.board.getWidth() * this.board.getPointSpacing() : 200) * 0.5;
+        const halfH = (this.board ? this.board.getHeight() * this.board.getPointSpacing() : 200) * 0.5;
+        return new Vec2(halfW, halfH);
+    }
+
+    /** 限制 layer 位置：棋盘四角在 x、y 方向至少距中心 100 */
+    private static readonly MIN_MARGIN = 100;
+
+    private _clampLayerPosition(): void {
+        const layer = this._getTargetLayer();
+        if (!layer) return;
+        const half = this._getBoardHalfSize();
+        const s = this._getCurrentScale();
+        const M = GameLayerZoom.MIN_MARGIN;
+        let minX = M - half.x * s;
+        let maxX = half.x * s - M;
+        let minY = M - half.y * s;
+        let maxY = half.y * s - M;
+        if (minX > maxX) minX = maxX = 0;
+        if (minY > maxY) minY = maxY = 0;
+        const p = layer.position;
+        layer.setPosition(
+            Math.max(minX, Math.min(maxX, p.x)),
+            Math.max(minY, Math.min(maxY, p.y)),
+            p.z
+        );
+    }
+
+    private _applyPanDelta(dx: number, dy: number): void {
+        const layer = this._getTargetLayer();
+        if (!layer) return;
+        const p = layer.position;
+        layer.setPosition(p.x + dx, p.y + dy, p.z);
+        this._clampLayerPosition();
     }
 
     private _onTouchStart(event: EventTouch): void {
@@ -122,19 +169,20 @@ export class GameLayerZoom extends Component {
     }
 
     private _onTouchMove(event: EventTouch): void {
-        if (!this._isPinching) return;
         const touches = (event.getAllTouches && event.getAllTouches()) ?? (event as any).getTouches?.() ?? [];
-        if (touches.length < 2) return;
-        const d = distance(
-            touches[0].getUILocation().x, touches[0].getUILocation().y,
-            touches[1].getUILocation().x, touches[1].getUILocation().y
-        );
-        if (this._lastPinchDistance > 0) {
-            const s = this._lastPinchScale * (d / this._lastPinchDistance);
-            this._applyScale(s);
-            this._lastPinchScale = this._scale;
+        if (this._isPinching) {
+            if (touches.length < 2) return;
+            const d = distance(
+                touches[0].getUILocation().x, touches[0].getUILocation().y,
+                touches[1].getUILocation().x, touches[1].getUILocation().y
+            );
+            if (this._lastPinchDistance > 0) {
+                const s = this._lastPinchScale * (d / this._lastPinchDistance);
+                this._applyScale(s);
+                this._lastPinchScale = this._scale;
+            }
+            this._lastPinchDistance = d;
         }
-        this._lastPinchDistance = d;
     }
 
     private _onTouchEnd(event: EventTouch): void {
@@ -143,11 +191,31 @@ export class GameLayerZoom extends Component {
     }
 
     private _onMouseWheel(event: EventMouse): void {
-        const delta = -event.getScrollY();
+        const delta = event.getScrollY();
         const layer = this._getTargetLayer();
         if (!layer) return;
         const s = this._getCurrentScale() * (1 + delta * this.wheelSensitivity);
         this._applyScale(s);
+    }
+
+    private _onMouseDown(event: EventMouse): void {
+        if (event.getButton() === 2) {
+            this._isMouseDragging = true;
+            const pos = event.getUILocation();
+            this._lastDragPos.set(pos.x, pos.y);
+        }
+    }
+
+    private _onMouseMove(event: EventMouse): void {
+        if (this._isMouseDragging) {
+            const pos = event.getUILocation();
+            this._applyPanDelta(pos.x - this._lastDragPos.x, pos.y - this._lastDragPos.y);
+            this._lastDragPos.set(pos.x, pos.y);
+        }
+    }
+
+    private _onMouseUp(event: EventMouse): void {
+        if (event.getButton() === 2) this._isMouseDragging = false;
     }
 
     /** 当前缩放值，供 UI 同步 */

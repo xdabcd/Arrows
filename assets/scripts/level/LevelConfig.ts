@@ -60,26 +60,52 @@ import { JsonAsset } from 'cc';
 /** 关卡配置存储：读写均使用 assets/resources/conf/levels.json（紧凑格式以减小体积） */
 export class LevelStorage {
 
-    /** 从 assets/resources/conf/levels.json 读取配置（异步），支持紧凑格式与旧格式 */
-    static loadFromLevelsJson(callback: (data: LevelsConfigFile) => void): void {
+    private static _preloaded: LevelsConfigFile | null = null;
+
+    /**
+     * 游戏开始时预加载关卡配置（建议在首场景挂 LevelPreloader 调用）。
+     * 加载结果会缓存，后续 loadFromLevelsJson 将直接使用缓存。
+     */
+    static preloadLevelsJson(callback?: (data: LevelsConfigFile) => void): void {
+        if (LevelStorage._preloaded != null) {
+            callback?.(LevelStorage._preloaded);
+            return;
+        }
         resources.load('conf/levels', JsonAsset, (err, asset) => {
-            if (err || !asset) {
-                callback({ levels: [] });
-                return;
-            }
-            const obj = (asset as JsonAsset).json as any;
-            if (!obj) {
-                callback({ levels: [] });
-                return;
-            }
-            if (isLegacyFormat(obj)) {
-                callback(obj);
-            } else if (obj.l && Array.isArray(obj.l)) {
-                callback(fromCompact(obj as CompactFile));
-            } else {
-                callback({ levels: [] });
-            }
+            const data = LevelStorage._parseLevelsAsset(err, asset);
+            LevelStorage._preloaded = data;
+            callback?.(data);
         });
+    }
+
+    private static _parseLevelsAsset(err: Error | null, asset: JsonAsset | null): LevelsConfigFile {
+        if (err || !asset) return { levels: [] };
+        const obj = (asset as JsonAsset).json as any;
+        if (!obj) return { levels: [] };
+        if (isLegacyFormat(obj)) return obj;
+        if (obj.l && Array.isArray(obj.l)) return fromCompact(obj as CompactFile);
+        return { levels: [] };
+    }
+
+    /**
+     * 从 assets/resources/conf/levels.json 读取配置（异步）。
+     * 若已通过 preloadLevelsJson 预加载，则直接返回缓存。
+     */
+    static loadFromLevelsJson(callback: (data: LevelsConfigFile) => void): void {
+        if (LevelStorage._preloaded != null) {
+            callback(LevelStorage._preloaded);
+            return;
+        }
+        resources.load('conf/levels', JsonAsset, (err, asset) => {
+            const data = LevelStorage._parseLevelsAsset(err, asset);
+            LevelStorage._preloaded = data;
+            callback(data);
+        });
+    }
+
+    /** 更新预加载缓存（保存后调用，保证后续读取到最新） */
+    static setPreloaded(data: LevelsConfigFile): void {
+        LevelStorage._preloaded = data;
     }
 
     /**

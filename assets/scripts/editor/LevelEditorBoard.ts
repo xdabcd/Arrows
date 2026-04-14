@@ -1,4 +1,5 @@
 import { _decorator, Component, Node, Prefab, instantiate, Vec3, UITransform } from 'cc';
+import type { BoardBounds } from '../arrow/ArrowManager';
 const { ccclass, property } = _decorator;
 
 /**
@@ -121,6 +122,17 @@ export class LevelEditorBoard extends Component {
     getPointSpacing(): number { return this.pointSpacing; }
     getWidth(): number { return this.width; }
     getHeight(): number { return this.height; }
+
+    /** 棋盘边界（中心坐标系），供 ArrowManager 等逻辑使用 */
+    getBounds(): BoardBounds {
+        const W = this.width, H = this.height;
+        return {
+            colMin: -Math.floor(W / 2),
+            colMax: Math.floor((W - 1) / 2),
+            rowMin: -Math.floor(H / 2),
+            rowMax: Math.floor((H - 1) / 2)
+        };
+    }
     getMinWidth(): number { return this.minWidth; }
     getMaxWidth(): number { return this.maxWidth; }
     getMinHeight(): number { return this.minHeight; }

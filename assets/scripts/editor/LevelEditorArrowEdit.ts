@@ -1,8 +1,8 @@
-import { _decorator, Component, Node, input, Input, EventTouch, Vec3, UITransform } from 'cc';
+import { _decorator, Component, Node, input, Input, EventMouse, Vec3, UITransform } from 'cc';
 import { LevelEditorBoard } from './LevelEditorBoard';
-import { ArrowManager } from './ArrowManager';
-import { ArrowColorPicker } from './ArrowColorPicker';
-import { ArrowPoint, arrowDataToPositions, isValidArrowData, simplifyPath } from './ArrowData';
+import { ArrowManager } from '../arrow/ArrowManager';
+import { ArrowColorPicker } from '../arrow/ArrowColorPicker';
+import { ArrowPoint, arrowDataToPositions, isValidArrowData, simplifyPath } from '../arrow/ArrowData';
 const { ccclass, property } = _decorator;
 
 /** 是否与上一格为四邻接（上下左右） */
@@ -67,26 +67,23 @@ export class LevelEditorArrowEdit extends Component {
     /** 本笔路径（从按下到抬起全程用此数组维护） */
     private _fullPath: ArrowPoint[] = [];
     private _isDrawing = false;
-    /** 本笔已处理过抬起，避免 TOUCH_END / TOUCH_CANCEL 重复执行 */
+    /** 本笔已处理过抬起，避免 MOUSE_UP 重复执行 */
     private _touchEndHandled = false;
 
     onLoad() {
-        input.on(Input.EventType.TOUCH_START, this._onTouchStart, this);
-        input.on(Input.EventType.TOUCH_MOVE, this._onTouchMove, this);
-        input.on(Input.EventType.TOUCH_END, this._onTouchEnd, this);
-        input.on(Input.EventType.TOUCH_CANCEL, this._onTouchEnd, this);
+        input.on(Input.EventType.MOUSE_DOWN, this._onMouseDown, this);
+        input.on(Input.EventType.MOUSE_MOVE, this._onMouseMove, this);
+        input.on(Input.EventType.MOUSE_UP, this._onMouseUp, this);
     }
 
     onDestroy() {
-        input.off(Input.EventType.TOUCH_START, this._onTouchStart, this);
-        input.off(Input.EventType.TOUCH_MOVE, this._onTouchMove, this);
-        input.off(Input.EventType.TOUCH_END, this._onTouchEnd, this);
-        input.off(Input.EventType.TOUCH_CANCEL, this._onTouchEnd, this);
+        input.off(Input.EventType.MOUSE_DOWN, this._onMouseDown, this);
+        input.off(Input.EventType.MOUSE_MOVE, this._onMouseMove, this);
+        input.off(Input.EventType.MOUSE_UP, this._onMouseUp, this);
     }
 
-    private _touchToBoardLocal(event: EventTouch): Vec3 {
-        const uiPos = event.getUILocation();
-        const worldPos = new Vec3(uiPos.x, uiPos.y, 0);
+    private _uiToBoardLocal(x: number, y: number): Vec3 {
+        const worldPos = new Vec3(x, y, 0);
         const target = this.boardContainer || this.node;
         const uiTransform = target.getComponent(UITransform);
         if (!uiTransform) return worldPos;
@@ -104,7 +101,7 @@ export class LevelEditorArrowEdit extends Component {
         if (this.arrowManager) this.arrowManager.setEditingPath(this._fullPath);
     }
 
-    /** 取消当前触摸/绘制（如双指缩放时由 GameLayerZoom 调用） */
+    /** 取消当前绘制（如双指缩放时由 GameLayerZoom 调用） */
     cancelTouch(): void {
         if (!this._isDrawing) return;
         this._isDrawing = false;
@@ -129,9 +126,11 @@ export class LevelEditorArrowEdit extends Component {
         this.arrowManager.setPreviewArrow(positions, colorIndex);
     }
 
-    private _onTouchStart(event: EventTouch): void {
+    private _onMouseDown(event: EventMouse): void {
+        if (event.getButton() !== 0) return;
         if (!this.board) return;
-        const local = this._touchToBoardLocal(event);
+        const uiPos = event.getUILocation();
+        const local = this._uiToBoardLocal(uiPos.x, uiPos.y);
         const cell = this.board.getGridFromLocal(local.x, local.y);
         if (cell == null) return;
         this._touchEndHandled = false;
@@ -150,12 +149,13 @@ export class LevelEditorArrowEdit extends Component {
         this._updatePreview();
     }
 
-    private _onTouchMove(event: EventTouch): void {
+    private _onMouseMove(event: EventMouse): void {
         // 0) 防御：未处于绘制状态或路径为空时不处理
         if (!this._isDrawing || !this.board || this._fullPath.length === 0) return;
 
         // 1) 将触摸位置转换到棋盘容器局部坐标，并换算为格子坐标（最新点）
-        const local = this._touchToBoardLocal(event);
+        const uiPos = event.getUILocation();
+        const local = this._uiToBoardLocal(uiPos.x, uiPos.y);
         let cell = this.board.getGridFromLocal(local.x, local.y);
 
         // 1.1) 吸附：若手指靠近“上一个点”（倒数第二个点），则强制把最新点视为上一个点，便于拖回
@@ -202,7 +202,8 @@ export class LevelEditorArrowEdit extends Component {
         this._updatePreview();
     }
 
-    private _onTouchEnd(): void {
+    private _onMouseUp(event: EventMouse): void {
+        if (event.getButton() !== 0) return;
         if (this._touchEndHandled) return;
         if (!this._isDrawing) return;
         this._touchEndHandled = true;
