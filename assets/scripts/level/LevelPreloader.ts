@@ -111,7 +111,8 @@ export class LevelPreloader extends Component {
             cell.col,
             cell.row,
             board.getBounds(),
-            (c, r) => board.getPointPosition(c, r)
+            (c, r) => board.getPointPosition(c, r),
+            (c, r) => board.getPointNode(c, r)
         );
     }
 

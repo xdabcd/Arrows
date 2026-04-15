@@ -1,9 +1,19 @@
-import { _decorator, Component, Node, Prefab, instantiate, Vec3 } from 'cc';
+import { _decorator, Color, Component, Node, Prefab, Sprite, UIOpacity, instantiate, Vec3 } from 'cc';
 import { ArrowRenderer } from './ArrowRenderer';
 import { ArrowPoint } from './ArrowData';
 import { getArrowColor } from './ArrowColors';
 import type { LevelArrowData } from '../level/LevelConfig';
 const { ccclass, property } = _decorator;
+const BLOCK_BOUNCE_COLOR = new Color(255, 70, 70, 255);
+const BLOCK_BOUNCE_EARLY_GRIDS = 0.6;
+const BLOCK_COLOR_LERP_DURATION = 0.15;
+const OVERLAY_FLASH_IN_SECONDS = 3 / 60;
+const OVERLAY_FLASH_OUT_SECONDS = 12 / 60;
+const OVERLAY_PEAK_ALPHA_01 = 0.5;
+const POINT_TRAIL_PULSE_DURATION = 0.3;
+const POINT_TRAIL_MAX_SCALE = 2.5;
+const POINT_TRAIL_DELAY_AFTER_PASS = 0.1;
+const POINT_TRAIL_DEBUG_INSTANT_SCALE = false;
 
 /** 接管箭头结果：回退后的路径 + 颜色序列号 */
 export interface TakeOverResult {
@@ -87,11 +97,17 @@ export class ArrowManager extends Component {
     @property(Node)
     arrowContainer: Node | null = null;
 
+    /** 受击屏幕红色遮罩（Canvas 下 DmgOverlay），仅在阻挡回弹时闪烁警示 */
+    @property(Node)
+    dmgOverlay: Node | null = null;
+
     private _arrowNodes: Node[] = [];
     /** 每条箭头对应的格点路径（与 _arrowNodes 一一对应） */
     private _arrowPaths: ArrowPoint[][] = [];
     /** 每条箭头对应的颜色序列号（与 _arrowNodes 一一对应） */
     private _arrowColors: number[] = [];
+    /** 每条箭头是否已因阻挡回弹而标红（与 _arrowNodes 一一对应） */
+    private _arrowBlockedRed: boolean[] = [];
     private _previewNode: Node | null = null;
     /** 当前被已确认箭头占用的格点 (col,row) 集合 */
     private _occupiedPoints = new Set<string>();
@@ -104,16 +120,46 @@ export class ArrowManager extends Component {
         node: Node;
         renderer: ArrowRenderer;
         totalDistance: number;
+        unitGridDistance: number;
         initialSpeed: number;
         acceleration: number;
         totalDuration: number;
         elapsed: number;
+        phase: 'out' | 'back';
+        isBlockedBounce: boolean;
+        originalColor: Color;
+        initialPositions: Vec3[];
+        firstBlockStep: number;
+        colorLerpElapsed: number;
+        colorLerpDuration: number;
+        colorLerpFrom: Color;
+        colorLerpTo: Color;
+        lastOutMoved: number;
     } | null = null;
+    private _dmgOverlayOpacity: UIOpacity | null = null;
+    private _dmgOverlayFlashCtx: {
+        phase: 'in' | 'out';
+        elapsed: number;
+    } | null = null;
+    private _pointTrailPending: {
+        node: Node;
+        triggerDistance: number;
+    }[] = [];
+    private _pointTrailDelayed: {
+        node: Node;
+        startAt: number;
+    }[] = [];
+    private _pointTrailActive: {
+        node: Node;
+        baseScale: Vec3;
+        elapsed: number;
+    }[] = [];
+    private _pointTrailClock = 0;
 
-    /** 固定滑出速度：2 帧移动 1 格（60fps 参考）。 */
+    /** 匀加速标尺：从静止出发，移动第 1 格耗时 3 帧（60fps 参考）。 */
     private _getSlideOutSecondsPerGrid(): number {
         const refFps = 60;
-        const framesPerStep = 2;
+        const framesPerStep = 3;
         return framesPerStep / refFps;
     }
 
@@ -170,6 +216,7 @@ export class ArrowManager extends Component {
         this._arrowNodes.push(node);
         this._arrowPaths.push(points && points.length >= 2 ? points.slice() : []);
         this._arrowColors.push(colorIndex);
+        this._arrowBlockedRed.push(false);
         return node;
     }
 
@@ -207,6 +254,7 @@ export class ArrowManager extends Component {
         this._arrowNodes.splice(index, 1);
         this._arrowPaths.splice(index, 1);
         this._arrowColors.splice(index, 1);
+        this._arrowBlockedRed.splice(index, 1);
     }
 
     private _releaseOccupiedForPath(path: ArrowPoint[] | undefined): void {
@@ -220,17 +268,21 @@ export class ArrowManager extends Component {
 
     onDestroy(): void {
         this._abortSlideOutAnimation();
+        this._stopDmgOverlayFlash();
+        this._stopPointTrailFx(true);
     }
 
     /** 移除所有已添加的箭头并清空占用 */
     clearAll(): void {
         this._abortSlideOutAnimation();
+        this._stopPointTrailFx(true);
         for (const n of this._arrowNodes) {
             n.destroy();
         }
         this._arrowNodes = [];
         this._arrowPaths = [];
         this._arrowColors = [];
+        this._arrowBlockedRed = [];
         this._occupiedPoints.clear();
         this.clearPreview();
     }
@@ -422,7 +474,35 @@ export class ArrowManager extends Component {
         return -1;
     }
 
-    private _getSlideOutExitStepForPath(path: ArrowPoint[] | undefined, bounds: BoardBounds, otherOccupied: Set<string>): number {
+    private _getCurrentArrowRenderColor(arrowIndex: number): Color {
+        const node = this._arrowNodes[arrowIndex];
+        if (node && node.isValid) {
+            const sprites = node.getComponentsInChildren(Sprite);
+            if (sprites.length > 0) return sprites[0].color.clone();
+        }
+        if (this._arrowBlockedRed[arrowIndex] === true) return BLOCK_BOUNCE_COLOR.clone();
+        const colorIndex = this._arrowColors[arrowIndex] ?? 0;
+        return getArrowColor(colorIndex);
+    }
+
+    /**
+     * 仅用于滑出步进/距离判定：把路径密化为逐格点，避免“按拐点跳步”导致距离与判定失真。
+     * 注意：渲染仍使用原始 path，保证 body 段数不膨胀。
+     */
+    private _densifyPathForSlide(path: ArrowPoint[] | undefined): ArrowPoint[] {
+        if (!path || path.length < 2) return [];
+        const out: ArrowPoint[] = [];
+        for (let i = 0; i < path.length - 1; i++) {
+            const seg = getGridPointsOnSegment(path[i], path[i + 1]);
+            for (let j = 0; j < seg.length; j++) {
+                if (i > 0 && j === 0) continue;
+                out.push({ col: seg[j].col, row: seg[j].row });
+            }
+        }
+        return out.length >= 2 ? out : path.slice();
+    }
+
+    private _getExitStepIgnoringBlock(path: ArrowPoint[] | undefined, bounds: BoardBounds): number {
         if (!path || path.length < 2) return -1;
         const extended = this.getExtendedPathForSlide(path, bounds);
         const pathLen = path.length;
@@ -434,7 +514,7 @@ export class ArrowManager extends Component {
                 const [c, r] = key.split(',').map(Number);
                 if (this.isInBounds(c, r, bounds)) {
                     allOut = false;
-                    if (otherOccupied.has(key)) return -1;
+                    break;
                 }
             }
             if (allOut) return t;
@@ -442,20 +522,164 @@ export class ArrowManager extends Component {
         return -1;
     }
 
-    private _abortSlideOutAnimation(): void {
-        this._slideOutCtx = null;
-        this._isSliding = false;
+    private _buildOccupiedOwnerMapExcludingArrow(selfArrowIndex: number): Map<string, number[]> {
+        const owners = new Map<string, number[]>();
+        for (let i = 0; i < this._arrowPaths.length; i++) {
+            if (i === selfArrowIndex) continue;
+            const points = this.getArrowOccupiedPoints(i);
+            for (const key of points) {
+                const arr = owners.get(key);
+                if (!arr) {
+                    owners.set(key, [i]);
+                    continue;
+                }
+                // 同一点可能被多条箭头占据，保留归属索引列表
+                if (arr.indexOf(i) < 0) arr.push(i);
+            }
+        }
+        return owners;
     }
 
-    private _finishSlideOutFromCtx(ctx: {
+    private _getFirstBlockingInfo(
+        path: ArrowPoint[] | undefined,
+        bounds: BoardBounds,
+        selfArrowIndex: number
+    ): number {
+        if (!path || path.length < 2) return -1;
+        const owners = this._buildOccupiedOwnerMapExcludingArrow(selfArrowIndex);
+        const selfStartOccupied = this.getArrowOccupiedPoints(selfArrowIndex);
+        if (owners.size <= 0) return -1;
+        const extended = this.getExtendedPathForSlide(path, bounds);
+        const pathLen = path.length;
+        const maxStep = extended.length - pathLen;
+        const rawDCol = path[path.length - 1].col - path[path.length - 2].col;
+        const rawDRow = path[path.length - 1].row - path[path.length - 2].row;
+        const g = gcdInt(rawDCol, rawDRow);
+        const stepCol = g > 0 ? rawDCol / g : rawDCol;
+        const stepRow = g > 0 ? rawDRow / g : rawDRow;
+        const head0 = path[path.length - 1];
+
+        for (let t = 1; t <= maxStep; t++) {
+            let blockerIndex = -1;
+            let firstHitKey = '';
+            let firstHitOwners: number[] = [];
+            let bestForward = -Infinity;
+            let addedCount = 0;
+            const debugCandidates: string[] = [];
+            // 仅按“头部前沿”新进入的轨迹点判定首撞，避免身体形变带来的伪早碰撞
+            const prevHead = extended[t + pathLen - 2];
+            const currHead = extended[t + pathLen - 1];
+            if (!prevHead || !currHead) continue;
+            const headFrontPoints = getGridPointsOnSegment(prevHead, currHead);
+            for (const p of headFrontPoints) {
+                const key = pointKey(p.col, p.row);
+                const [c, r] = key.split(',').map(Number);
+                if (!this.isInBounds(c, r, bounds)) continue;
+                // 候选点必须在初始头部的前方，排除侧向/回向伪命中
+                const forwardFromHead0 = (c - head0.col) * stepCol + (r - head0.row) * stepRow;
+                if (forwardFromHead0 <= 0) continue;
+                addedCount += 1;
+                // 排除初始占据点，避免起始重叠区域被误判为“首次碰撞”
+                if (selfStartOccupied.has(key)) continue;
+                const ownerList = owners.get(key);
+                if (!ownerList || ownerList.length <= 0) continue;
+                debugCandidates.push(`${key}(f=${forwardFromHead0})->[${ownerList.join(',')}]`);
+                const forward = c * stepCol + r * stepRow;
+                if (forward > bestForward) {
+                    bestForward = forward;
+                    firstHitKey = key;
+                    firstHitOwners = ownerList.slice();
+                    blockerIndex = ownerList[0];
+                    for (const owner of ownerList) {
+                        if (owner < blockerIndex) blockerIndex = owner;
+                    }
+                }
+            }
+            if (blockerIndex >= 0) {
+                return t;
+            }
+        }
+        return -1;
+    }
+
+    private _analyzeSlideOutPath(
+        path: ArrowPoint[] | undefined,
+        bounds: BoardBounds,
+        selfArrowIndex: number
+    ): { exitStep: number; blockStep: number } {
+        const exitStep = this._getExitStepIgnoringBlock(path, bounds);
+        const firstBlockStep = this._getFirstBlockingInfo(path, bounds, selfArrowIndex);
+        if (firstBlockStep > 0 && (exitStep < 0 || firstBlockStep <= exitStep)) {
+            return { exitStep: -1, blockStep: firstBlockStep };
+        }
+        return { exitStep, blockStep: -1 };
+    }
+
+    private _evalSlideDistance(v0: number, a: number, t: number, totalDistance: number): number {
+        return Math.min(totalDistance, Math.max(0, v0 * t + 0.5 * a * t * t));
+    }
+
+    private _buildSlideMotion(totalDistance: number, unitGridDistance: number): {
+        initialSpeed: number;
+        acceleration: number;
+        totalDuration: number;
+    } {
+        const tFirstGrid = this._getSlideOutSecondsPerGrid();
+        // 初速度略抬高（相对“一格/首格时间”的 10%），让起步更利落
+        const speedUnitsPerSec = (unitGridDistance > 1e-6 && tFirstGrid > 1e-6)
+            ? (unitGridDistance / tFirstGrid) * 0.1
+            : 0;
+        // s = v0*t + 1/2*a*t^2；保持首格时间基准不变，并沿用之前 0.25 的加速度倍率
+        const accelBase = (unitGridDistance > 1e-6 && tFirstGrid > 1e-6)
+            ? (2 * Math.max(0, unitGridDistance - speedUnitsPerSec * tFirstGrid)) / (tFirstGrid * tFirstGrid)
+            : 0;
+        const accelPerSec2 = accelBase * 0.25;
+        let totalDuration = 0;
+        if (accelPerSec2 > 1e-6 && totalDistance > 1e-6) {
+            // s = v0*t + 1/2*a*t^2 -> t = (-v0 + sqrt(v0^2 + 2as)) / a
+            const disc = speedUnitsPerSec * speedUnitsPerSec + 2 * accelPerSec2 * totalDistance;
+            totalDuration = (-speedUnitsPerSec + Math.sqrt(Math.max(0, disc))) / accelPerSec2;
+        }
+        return { initialSpeed: speedUnitsPerSec, acceleration: accelPerSec2, totalDuration };
+    }
+
+    private _lerpColor(from: Color, to: Color, t: number): Color {
+        const k = Math.max(0, Math.min(1, t));
+        return new Color(
+            Math.round(from.r + (to.r - from.r) * k),
+            Math.round(from.g + (to.g - from.g) * k),
+            Math.round(from.b + (to.b - from.b) * k),
+            Math.round(from.a + (to.a - from.a) * k),
+        );
+    }
+
+    private _updateBlockedColorLerp(ctx: NonNullable<ArrowManager['_slideOutCtx']>, dt: number): void {
+        if (ctx.colorLerpDuration <= 1e-6) {
+            ctx.renderer.applyColor(ctx.colorLerpTo);
+            return;
+        }
+        ctx.colorLerpElapsed = Math.min(ctx.colorLerpDuration, ctx.colorLerpElapsed + Math.max(0, dt));
+        const t = ctx.colorLerpElapsed / ctx.colorLerpDuration;
+        // 先快后慢（ease-out）
+        const eased = 1 - (1 - t) * (1 - t);
+        ctx.renderer.applyColor(this._lerpColor(ctx.colorLerpFrom, ctx.colorLerpTo, eased));
+    }
+
+    private _finishSlideOutSuccess(ctx: {
         arrowIndex: number;
         node: Node;
         renderer: ArrowRenderer;
         totalDistance: number;
+        unitGridDistance: number;
         initialSpeed: number;
         acceleration: number;
         totalDuration: number;
         elapsed: number;
+        phase: 'out' | 'back';
+        isBlockedBounce: boolean;
+        originalColor: Color;
+        initialPositions: Vec3[];
+        firstBlockStep: number;
     }): void {
         this._slideOutCtx = null;
         if (ctx.node.isValid) {
@@ -467,6 +691,280 @@ export class ArrowManager extends Component {
         this._isSliding = false;
     }
 
+    private _finishSlideOutBlocked(ctx: {
+        arrowIndex: number;
+        node: Node;
+        renderer: ArrowRenderer;
+        totalDistance: number;
+        unitGridDistance: number;
+        initialSpeed: number;
+        acceleration: number;
+        totalDuration: number;
+        elapsed: number;
+        phase: 'out' | 'back';
+        isBlockedBounce: boolean;
+        originalColor: Color;
+        initialPositions: Vec3[];
+        firstBlockStep: number;
+    }): void {
+        this._slideOutCtx = null;
+        if (ctx.node.isValid) {
+            // 回弹结束保持红色，只把形态回到原位（不重建节点）
+            ctx.renderer.updateSlideByDistance(0);
+            ctx.renderer.applyColor(BLOCK_BOUNCE_COLOR);
+            if (ctx.arrowIndex >= 0 && ctx.arrowIndex < this._arrowBlockedRed.length) {
+                this._arrowBlockedRed[ctx.arrowIndex] = true;
+            }
+        }
+        this._isSliding = false;
+    }
+
+    private _abortSlideOutAnimation(): void {
+        const ctx = this._slideOutCtx;
+        if (ctx && ctx.node.isValid && ctx.isBlockedBounce) {
+            // 中断阻挡回弹时同样保持红色，并回到初始形态（不重建节点）
+            ctx.renderer.updateSlideByDistance(0);
+            ctx.renderer.applyColor(BLOCK_BOUNCE_COLOR);
+            if (ctx.arrowIndex >= 0 && ctx.arrowIndex < this._arrowBlockedRed.length) {
+                this._arrowBlockedRed[ctx.arrowIndex] = true;
+            }
+        }
+        this._slideOutCtx = null;
+        this._isSliding = false;
+    }
+
+    private _ensureDmgOverlayOpacity(): UIOpacity | null {
+        if (!this.dmgOverlay || !this.dmgOverlay.isValid) return null;
+        if (this._dmgOverlayOpacity && this._dmgOverlayOpacity.isValid) return this._dmgOverlayOpacity;
+        let op = this.dmgOverlay.getComponent(UIOpacity);
+        if (!op) op = this.dmgOverlay.addComponent(UIOpacity);
+        this._dmgOverlayOpacity = op;
+        return op;
+    }
+
+    private _setDmgOverlayAlpha01(alpha01: number): void {
+        const op = this._ensureDmgOverlayOpacity();
+        if (!op || !this.dmgOverlay) return;
+        const a = Math.max(0, Math.min(1, alpha01));
+        op.opacity = Math.round(a * 255);
+        this.dmgOverlay.active = a > 0;
+    }
+
+    private _startDmgOverlayFlash(): void {
+        if (!this.dmgOverlay || !this.dmgOverlay.isValid) return;
+        this.dmgOverlay.active = true;
+        this._setDmgOverlayAlpha01(0);
+        this._dmgOverlayFlashCtx = { phase: 'in', elapsed: 0 };
+    }
+
+    private _stopDmgOverlayFlash(): void {
+        this._dmgOverlayFlashCtx = null;
+        if (!this.dmgOverlay || !this.dmgOverlay.isValid) return;
+        this._setDmgOverlayAlpha01(0);
+        this.dmgOverlay.active = false;
+    }
+
+    private _tickDmgOverlayFlash(dt: number): void {
+        const fx = this._dmgOverlayFlashCtx;
+        if (!fx) return;
+        const stepDt = Math.max(0, dt);
+        if (fx.phase === 'in') {
+            fx.elapsed = Math.min(OVERLAY_FLASH_IN_SECONDS, fx.elapsed + stepDt);
+            const t = OVERLAY_FLASH_IN_SECONDS > 1e-6 ? fx.elapsed / OVERLAY_FLASH_IN_SECONDS : 1;
+            // 平滑淡入（ease-out）
+            const eased = 1 - (1 - t) * (1 - t);
+            this._setDmgOverlayAlpha01(OVERLAY_PEAK_ALPHA_01 * eased);
+            if (fx.elapsed >= OVERLAY_FLASH_IN_SECONDS - 1e-6) {
+                fx.phase = 'out';
+                fx.elapsed = 0;
+            }
+            return;
+        }
+        fx.elapsed = Math.min(OVERLAY_FLASH_OUT_SECONDS, fx.elapsed + stepDt);
+        const t = OVERLAY_FLASH_OUT_SECONDS > 1e-6 ? fx.elapsed / OVERLAY_FLASH_OUT_SECONDS : 1;
+        // 平滑淡出（ease-in），避免突兀消失
+        const eased = t * t;
+        this._setDmgOverlayAlpha01(OVERLAY_PEAK_ALPHA_01 * (1 - eased));
+        if (fx.elapsed >= OVERLAY_FLASH_OUT_SECONDS - 1e-6) {
+            this._stopDmgOverlayFlash();
+        }
+    }
+
+    private _stopPointTrailFx(resetScale: boolean): void {
+        if (resetScale) {
+            for (const a of this._pointTrailActive) {
+                if (a.node && a.node.isValid) a.node.setScale(a.baseScale);
+            }
+        }
+        this._pointTrailPending = [];
+        this._pointTrailDelayed = [];
+        this._pointTrailActive = [];
+        this._pointTrailClock = 0;
+    }
+
+    private _preparePointTrailFx(
+        triggers: {
+            point: ArrowPoint;
+            triggerDistance: number;
+        }[],
+        _unitGridDistance: number,
+        getPointNode?: (c: number, r: number) => Node | null
+    ): void {
+        this._stopPointTrailFx(true);
+        if (!getPointNode || triggers.length <= 0) return;
+        for (let i = 0; i < triggers.length; i++) {
+            const item = triggers[i];
+            const p = item.point;
+            const node = getPointNode(p.col, p.row);
+            if (!node || !node.isValid) continue;
+            this._pointTrailPending.push({
+                node,
+                // 以“尾巴经过该点的真实位移阈值”为触发基准
+                triggerDistance: Math.max(0, item.triggerDistance),
+            });
+        }
+    }
+
+    /** 按路径经过顺序（逐段）展开占据点：用于拖尾动画的时序。 */
+    private _getOrderedOccupiedPointsFromPath(path: ArrowPoint[] | undefined): ArrowPoint[] {
+        if (!path || path.length < 2) return [];
+        const ordered: ArrowPoint[] = [];
+        const seen = new Set<string>();
+        for (let i = 0; i < path.length - 1; i++) {
+            const seg = getGridPointsOnSegment(path[i], path[i + 1]);
+            for (let j = 0; j < seg.length; j++) {
+                if (i > 0 && j === 0) continue;
+                const p = seg[j];
+                const key = pointKey(p.col, p.row);
+                if (seen.has(key)) continue;
+                seen.add(key);
+                ordered.push({ col: p.col, row: p.row });
+            }
+        }
+        return ordered;
+    }
+
+    /** 生成“滑出全过程”的拖尾触发序列（按每步离开的点触发）。 */
+    private _getTrailPointTriggersForSlide(
+        analysisPath: ArrowPoint[],
+        extended: ArrowPoint[],
+        finalStart: number,
+        unitGridDistance: number
+    ): {
+        point: ArrowPoint;
+        triggerDistance: number;
+    }[] {
+        if (!analysisPath || analysisPath.length < 2) return [];
+        const pathLen = analysisPath.length;
+        const out: { point: ArrowPoint; triggerDistance: number }[] = [];
+        const seen = new Set<string>();
+        let prevOcc = this.getOccupiedAtStep(extended, 0, pathLen);
+        let prevOrdered = this._getOrderedOccupiedPointsFromPath(extended.slice(0, pathLen));
+        const steps = Math.max(0, Math.floor(finalStart));
+        for (let t = 1; t <= steps; t++) {
+            const occ = this.getOccupiedAtStep(extended, t, pathLen);
+            const released: ArrowPoint[] = [];
+            // 用上一步窗口的有序点列来判断离开点，保证尾巴离开顺序稳定
+            for (const p of prevOrdered) {
+                const k = pointKey(p.col, p.row);
+                if (!occ.has(k)) released.push({ col: p.col, row: p.row });
+            }
+            for (const p of released) {
+                const k = pointKey(p.col, p.row);
+                if (seen.has(k)) continue;
+                seen.add(k);
+                out.push({
+                    point: p,
+                    // 该点在第 t 步被尾巴越过：对应位移约为 (t-1) 格
+                    triggerDistance: Math.max(0, t - 1) * unitGridDistance,
+                });
+            }
+            prevOcc = occ;
+            prevOrdered = this._getOrderedOccupiedPointsFromPath(extended.slice(t, t + pathLen));
+        }
+        return out;
+    }
+
+    private _tickPointTrailFx(dt: number, movedDistance?: number): void {
+        if (
+            this._pointTrailPending.length <= 0 &&
+            this._pointTrailDelayed.length <= 0 &&
+            this._pointTrailActive.length <= 0
+        ) return;
+        this._pointTrailClock += Math.max(0, dt);
+        const movedForTrigger = movedDistance != null ? Math.max(0, movedDistance) : null;
+        // 尾巴经过点后，先进入固定延时队列
+        while (
+            movedForTrigger != null &&
+            this._pointTrailPending.length > 0
+        ) {
+            const p = this._pointTrailPending[0];
+            if (!p.node || !p.node.isValid) {
+                this._pointTrailPending.shift();
+                continue;
+            }
+            if (movedForTrigger < p.triggerDistance) break;
+            this._pointTrailPending.shift();
+            this._pointTrailDelayed.push({
+                node: p.node,
+                startAt: this._pointTrailClock + POINT_TRAIL_DELAY_AFTER_PASS,
+            });
+        }
+        // 固定延时到达后，开始点动画
+        for (let i = this._pointTrailDelayed.length - 1; i >= 0; i--) {
+            const d = this._pointTrailDelayed[i];
+            if (!d.node || !d.node.isValid) {
+                this._pointTrailDelayed.splice(i, 1);
+                continue;
+            }
+            if (this._pointTrailClock < d.startAt) continue;
+            this._pointTrailDelayed.splice(i, 1);
+            const baseScale = d.node.scale.clone();
+            if (POINT_TRAIL_DEBUG_INSTANT_SCALE) {
+                d.node.setScale(
+                    baseScale.x * POINT_TRAIL_MAX_SCALE,
+                    baseScale.y * POINT_TRAIL_MAX_SCALE,
+                    baseScale.z * POINT_TRAIL_MAX_SCALE
+                );
+                // 调试模式：直接放大，不做缩回动画；下次 _stopPointTrailFx 会统一恢复
+                this._pointTrailActive.push({
+                    node: d.node,
+                    baseScale,
+                    elapsed: -1,
+                });
+            } else {
+                this._pointTrailActive.push({
+                    node: d.node,
+                    baseScale,
+                    elapsed: 0,
+                });
+            }
+        }
+        for (let i = this._pointTrailActive.length - 1; i >= 0; i--) {
+            const a = this._pointTrailActive[i];
+            if (!a.node || !a.node.isValid) {
+                this._pointTrailActive.splice(i, 1);
+                continue;
+            }
+            if (a.elapsed < 0) continue;
+            a.elapsed = Math.min(POINT_TRAIL_PULSE_DURATION, a.elapsed + Math.max(0, dt));
+            const t = POINT_TRAIL_PULSE_DURATION > 1e-6 ? a.elapsed / POINT_TRAIL_PULSE_DURATION : 1;
+            // 变窄脉冲：仍平滑，但大尺寸停留时间更短
+            const base = Math.sin(Math.PI * t);
+            const pulse = base * base * base;
+            const k = 1 + (POINT_TRAIL_MAX_SCALE - 1) * pulse;
+            a.node.setScale(
+                a.baseScale.x * k,
+                a.baseScale.y * k,
+                a.baseScale.z * k
+            );
+            if (a.elapsed >= POINT_TRAIL_PULSE_DURATION - 1e-6) {
+                a.node.setScale(a.baseScale);
+                this._pointTrailActive.splice(i, 1);
+            }
+        }
+    }
+
     private _tickSlideOut(dt: number): void {
         const ctx = this._slideOutCtx;
         if (!ctx || !ctx.node.isValid) {
@@ -474,21 +972,58 @@ export class ArrowManager extends Component {
             return;
         }
         if (ctx.totalDuration <= 1e-6) {
-            this._finishSlideOutFromCtx(ctx);
+            if (ctx.isBlockedBounce) this._finishSlideOutBlocked(ctx);
+            else this._finishSlideOutSuccess(ctx);
             return;
         }
-        ctx.elapsed = Math.min(ctx.totalDuration, ctx.elapsed + Math.max(0, dt));
-        const t = ctx.elapsed;
-        const moved = Math.min(
-            ctx.totalDistance,
-            ctx.initialSpeed * t + 0.5 * ctx.acceleration * t * t
-        );
-        ctx.renderer.updateSlideByDistance(moved);
-        if (ctx.elapsed >= ctx.totalDuration - 1e-6) this._finishSlideOutFromCtx(ctx);
+        const stepDt = Math.max(0, dt);
+        if (ctx.isBlockedBounce && ctx.phase === 'back') {
+            this._updateBlockedColorLerp(ctx, stepDt);
+        }
+        ctx.elapsed = Math.min(ctx.totalDuration, ctx.elapsed + stepDt);
+        if (ctx.phase === 'out') {
+            const targetMoved = this._evalSlideDistance(
+                ctx.initialSpeed,
+                ctx.acceleration,
+                ctx.elapsed,
+                ctx.totalDistance
+            );
+            // 避免个别帧位移过小导致“尾巴看起来没缩短”的视觉停顿
+            const minVisualStep = Math.max(0, ctx.unitGridDistance) / 240;
+            let moved = targetMoved;
+            if (moved < ctx.totalDistance - 1e-6) {
+                moved = Math.max(moved, Math.min(ctx.totalDistance, ctx.lastOutMoved + minVisualStep));
+            }
+            ctx.lastOutMoved = moved;
+            ctx.renderer.updateSlideByDistance(moved);
+            if (!ctx.isBlockedBounce) this._tickPointTrailFx(stepDt, moved);
+            if (ctx.elapsed >= ctx.totalDuration - 1e-6) {
+                if (!ctx.isBlockedBounce) {
+                    this._finishSlideOutSuccess(ctx);
+                    return;
+                }
+                ctx.phase = 'back';
+                ctx.elapsed = 0;
+                // 撞击瞬间开始从当前色渐变到红色
+                ctx.colorLerpFrom = this._getCurrentArrowRenderColor(ctx.arrowIndex);
+                ctx.colorLerpElapsed = 0;
+            }
+            return;
+        }
+        // 反向回溯：按移出曲线倒放（先快后慢）
+        const tBackRef = Math.max(0, ctx.totalDuration - ctx.elapsed);
+        const movedBack = this._evalSlideDistance(ctx.initialSpeed, ctx.acceleration, tBackRef, ctx.totalDistance);
+        ctx.renderer.updateSlideByDistance(movedBack);
+        if (ctx.elapsed >= ctx.totalDuration - 1e-6) this._finishSlideOutBlocked(ctx);
     }
 
     update(dt: number): void {
-        if (!this._slideOutCtx) return;
+        this._tickDmgOverlayFlash(dt);
+        if (!this._slideOutCtx) {
+            // 主箭头结束后，点拖尾仍继续播完
+            this._tickPointTrailFx(dt);
+            return;
+        }
         this._tickSlideOut(dt);
     }
 
@@ -501,6 +1036,7 @@ export class ArrowManager extends Component {
         row: number,
         bounds: BoardBounds,
         getPosition: (c: number, r: number) => Vec3,
+        getPointNode?: (c: number, r: number) => Node | null,
         _stepDuration: number = 0.06
     ): boolean {
         if (this._isSliding) return false;
@@ -509,60 +1045,64 @@ export class ArrowManager extends Component {
         const path = this._arrowPaths[arrowIndex];
         const node = this._arrowNodes[arrowIndex];
         if (!path || path.length < 2 || !node || !node.isValid) return false;
-        const otherOccupied = this.getOccupiedPointsExcludingArrow(arrowIndex);
-        const exitStep = this._getSlideOutExitStepForPath(path, bounds, otherOccupied);
-        if (exitStep < 1) {
+        const analysisPath = this._densifyPathForSlide(path);
+        const analysis = this._analyzeSlideOutPath(analysisPath, bounds, arrowIndex);
+        if (analysis.exitStep < 1 && analysis.blockStep < 1) {
             console.log('[Arrows] 箭头被阻挡，无法沿轨迹滑出');
             return false;
         }
 
-        const colorIndex = this._arrowColors[arrowIndex] ?? 0;
+        const renderColor = this._getCurrentArrowRenderColor(arrowIndex);
         // 用原始路径建段，滑出期间只改这批 body 的长度，不新增段数
         const initialPositions = path.map(p => getPosition(p.col, p.row));
         const renderer = node.getComponent(ArrowRenderer);
         if (!renderer) return false;
+        const parent = node.parent;
+        if (parent) {
+            node.setSiblingIndex(parent.children.length - 1);
+        }
 
-        this._releaseOccupiedForPath(path);
-
-        const extended = this.getExtendedPathForSlide(path, bounds);
+        const extended = this.getExtendedPathForSlide(analysisPath, bounds);
         /** 逻辑上已全部离格后，再多滑几格，避免线宽/箭头头仍压在边线内 */
         const VISUAL_PAD = 6;
-        const finalStart = Math.min(exitStep + VISUAL_PAD, extended.length - path.length);
+        const maxStart = extended.length - analysisPath.length;
+        const blockedTargetStart = Math.max(0.12, analysis.blockStep - BLOCK_BOUNCE_EARLY_GRIDS);
+        const finalStart = analysis.exitStep > 0
+            ? Math.min(analysis.exitStep + VISUAL_PAD, extended.length - analysisPath.length)
+            : Math.min(blockedTargetStart, maxStart);
+        const isBlockedBounce = analysis.exitStep < 1 && analysis.blockStep > 0;
+        if (!isBlockedBounce) this._releaseOccupiedForPath(path);
+        else this._startDmgOverlayFlash();
 
         this._abortSlideOutAnimation();
-        renderer.buildArrow(initialPositions, getArrowColor(colorIndex));
-        let totalDistance = 0;
-        for (let i = 0; i < finalStart; i++) {
-            const a = getPosition(extended[i].col, extended[i].row);
-            const b = getPosition(extended[i + 1].col, extended[i + 1].row);
-            totalDistance += Vec3.distance(a, b);
-        }
-        const rawDCol = path[path.length - 1].col - path[path.length - 2].col;
-        const rawDRow = path[path.length - 1].row - path[path.length - 2].row;
+        renderer.buildArrow(initialPositions, renderColor);
+        const rawDCol = analysisPath[analysisPath.length - 1].col - analysisPath[analysisPath.length - 2].col;
+        const rawDRow = analysisPath[analysisPath.length - 1].row - analysisPath[analysisPath.length - 2].row;
         const g = gcdInt(rawDCol, rawDRow);
         const stepCol = g > 0 ? rawDCol / g : rawDCol;
         const stepRow = g > 0 ? rawDRow / g : rawDRow;
-        const tail = path[path.length - 1];
+        const tail = analysisPath[analysisPath.length - 1];
         // 统一使用“滑出方向单格位移”的世界距离做速度标尺，避免不同箭头因首段长短导致速度不一致
         const unitA = getPosition(tail.col, tail.row);
         const unitB = getPosition(tail.col + stepCol, tail.row + stepRow);
         const unitGridDistance = Vec3.distance(unitA, unitB);
-        const speedUnitsPerSec = unitGridDistance > 1e-6
-            ? unitGridDistance / this._getSlideOutSecondsPerGrid()
-            : 0;
-        // 样例：第二段速度约为第一段 1.1 倍，按同一时间窗推导恒定加速度
-        const accelPerSec2 = this._getSlideOutSecondsPerGrid() > 1e-6
-            ? (speedUnitsPerSec * 0.1) / this._getSlideOutSecondsPerGrid()
-            : 0;
-        let totalDuration = 0;
-        if (speedUnitsPerSec > 1e-6) {
-            if (accelPerSec2 > 1e-6) {
-                // s = v0 t + 1/2 a t^2
-                const disc = speedUnitsPerSec * speedUnitsPerSec + 2 * accelPerSec2 * totalDistance;
-                totalDuration = (-speedUnitsPerSec + Math.sqrt(Math.max(0, disc))) / accelPerSec2;
-            } else {
-                totalDuration = totalDistance / speedUnitsPerSec;
-            }
+        // 距离按“步数 * 单格距离”计算，避免受路径开头长段影响导致 step=1 却移动多格
+        const totalDistance = Math.max(0, finalStart) * unitGridDistance;
+        const motion = this._buildSlideMotion(totalDistance, unitGridDistance);
+
+        if (!isBlockedBounce) {
+            // 按滑出每步“离开点”触发，和真实位移严格对齐
+            const trailTriggers = this._getTrailPointTriggersForSlide(
+                analysisPath,
+                extended,
+                finalStart,
+                unitGridDistance
+            );
+            this._preparePointTrailFx(
+                trailTriggers,
+                unitGridDistance,
+                getPointNode
+            );
         }
 
         this._slideOutCtx = {
@@ -570,10 +1110,21 @@ export class ArrowManager extends Component {
             node,
             renderer,
             totalDistance,
-            initialSpeed: speedUnitsPerSec,
-            acceleration: accelPerSec2,
-            totalDuration,
-            elapsed: 0
+            unitGridDistance,
+            initialSpeed: motion.initialSpeed,
+            acceleration: motion.acceleration,
+            totalDuration: motion.totalDuration,
+            elapsed: 0,
+            phase: 'out',
+            isBlockedBounce,
+            originalColor: renderColor.clone(),
+            initialPositions: initialPositions.map(p => new Vec3(p.x, p.y, p.z)),
+            firstBlockStep: analysis.blockStep,
+            colorLerpElapsed: 0,
+            colorLerpDuration: isBlockedBounce ? BLOCK_COLOR_LERP_DURATION : 0,
+            colorLerpFrom: renderColor.clone(),
+            colorLerpTo: BLOCK_BOUNCE_COLOR.clone(),
+            lastOutMoved: 0,
         };
         this._isSliding = true;
         renderer.updateSlideByDistance(0);

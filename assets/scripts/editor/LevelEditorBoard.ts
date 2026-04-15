@@ -39,6 +39,8 @@ export class LevelEditorBoard extends Component {
 
     /** 当前已生成的点的节点（用于刷新时销毁） */
     private _pointNodes: Node[] = [];
+    /** 按格坐标索引到点节点，key: "col,row" */
+    private _pointNodeMap = new Map<string, Node>();
 
     /** 当前宽度对应列范围（整数格坐标） */
     private _getColRange(): { min: number; max: number } {
@@ -93,6 +95,7 @@ export class LevelEditorBoard extends Component {
             n.destroy();
         }
         this._pointNodes = [];
+        this._pointNodeMap.clear();
 
         if (!this.pointPrefab) {
             return;
@@ -116,8 +119,13 @@ export class LevelEditorBoard extends Component {
                 pointNode.setPosition(new Vec3(x, y, 0));
                 pointNode.name = `Point_${i}_${j}`;
                 this._pointNodes.push(pointNode);
+                this._pointNodeMap.set(`${col},${row}`, pointNode);
             }
         }
+    }
+
+    getPointNode(col: number, row: number): Node | null {
+        return this._pointNodeMap.get(`${col},${row}`) ?? null;
     }
 
     /**
